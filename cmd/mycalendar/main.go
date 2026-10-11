@@ -79,7 +79,7 @@ func run() error {
 	go func() {
 		logger.Info("mycalendar listening",
 			"addr", cfg.Addr,
-			"database", cfg.DBPath,
+			"database", db.Location(),
 			"timezone", cfg.Location.String(),
 			"week_start", string(cfg.WeekStart),
 			"version", version,

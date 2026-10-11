@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +101,132 @@ func TestOpenRejectsUnsafePaths(t *testing.T) {
 		if _, err := Open(context.Background(), bad); err == nil {
 			t.Errorf("Open(%q) succeeded, want an error", bad)
 		}
+	}
+}
+
+// SQLite creates the database file but not its directory, so the store has to
+// prepare one; otherwise a path like /var/lib/mycalendar/data.db fails on a
+// first run with an opaque "unable to open database file".
+func TestOpenCreatesMissingParentDirectory(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "data", "mycalendar.db")
+
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("precondition failed: %s already exists", filepath.Dir(path))
+	}
+
+	st, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open with a missing parent directory: %v", err)
+	}
+	defer st.Close()
+
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		t.Fatalf("parent directory was not created: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database file was not created: %v", err)
+	}
+
+	// The new database must be fully usable, not merely present.
+	if _, err := st.CreateEvent(context.Background(), mkTimed("first run", 1_000, 2_000), nil); err != nil {
+		t.Fatalf("CreateEvent on a freshly created database: %v", err)
+	}
+}
+
+func TestOpenCreatesSeveralMissingDirectories(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a", "b", "c", "deep.db")
+
+	st, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database file was not created: %v", err)
+	}
+}
+
+func TestOpenRejectsPathsThatAreDirectories(t *testing.T) {
+	dir := t.TempDir()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"existing directory", dir},
+		{"trailing separator", dir + string(os.PathSeparator)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Open(context.Background(), tc.path)
+			if err == nil {
+				t.Fatalf("Open(%q) succeeded, want an error", tc.path)
+			}
+			// The message must say what is wrong rather than leaking a bare
+			// SQLite errno.
+			if !strings.Contains(err.Error(), "directory") {
+				t.Errorf("error %q does not mention the directory problem", err)
+			}
+		})
+	}
+}
+
+func TestOpenRejectsFileInPlaceOfDirectory(t *testing.T) {
+	base := t.TempDir()
+	blocker := filepath.Join(base, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err := Open(context.Background(), filepath.Join(blocker, "data.db"))
+	if err == nil {
+		t.Fatal("Open beneath a regular file succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error %q does not explain the problem", err)
+	}
+}
+
+func TestOpenInMemory(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:): %v", err)
+	}
+	defer st.Close()
+
+	if _, err := st.CreateEvent(ctx, mkTimed("in memory", 1_000, 2_000), nil); err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+	events, err := st.ListEvents(ctx, model.EventFilter{
+		Start:     time.Unix(0, 0),
+		End:       time.Unix(10_000, 0),
+		StartDate: "1970-01-01",
+		EndDate:   "1970-01-02",
+	})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("in-memory database returned %d events, want 1", len(events))
+	}
+}
+
+// A path relative to the working directory needs no directory preparation.
+func TestOpenWithBareFilename(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	st, err := Open(context.Background(), "relative.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+
+	if _, err := os.Stat(filepath.Join(dir, "relative.db")); err != nil {
+		t.Fatalf("database file was not created in the working directory: %v", err)
 	}
 }
 
