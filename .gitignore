@@ -37,6 +37,15 @@ go.work.sum
 *.db-wal
 *.db-shm
 
+# Frontend dependencies and build output. The bundle is generated: `make build`
+# compiles it and embeds it into the binary, so it is never committed.
+web/node_modules/
+web/e2e/node_modules/
+internal/webui/dist/
+
+# Screenshot produced by the optional browser verification.
+web/e2e/calendar.png
+
 # Editor/IDE
 # .idea/
 # .vscode/

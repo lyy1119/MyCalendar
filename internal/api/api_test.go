@@ -45,6 +45,12 @@ func newHarness(t *testing.T, zone string) *harness {
 		DefaultLocation:  loc,
 		DefaultWeekStart: calendar.Monday,
 		AllowAllOrigins:  true,
+		// A stub keeps these tests independent of whether the frontend bundle
+		// was compiled into the test binary.
+		Frontend: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte("<!doctype html><div id=\"root\"></div>"))
+		}),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -780,15 +786,20 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestUnknownEndpointIsJSON404(t *testing.T) {
+// Anything that is not an API path is handed to the app shell, which is what
+// makes a client-side route survive a page reload.
+func TestUnknownNonAPIPathServesAppShell(t *testing.T) {
 	h := newHarness(t, "UTC")
 
-	status, _, raw := h.do(http.MethodGet, "/does/not/exist", "", nil)
-	if status != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404; body: %s", status, raw)
+	status, headers, raw := h.do(http.MethodGet, "/does/not/exist", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", status, raw)
 	}
-	if code := errorCode(t, h.decode(raw)); code != "not_found" {
-		t.Errorf("error code = %q", code)
+	if ct := headers.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if !strings.Contains(string(raw), "<!doctype html>") {
+		t.Errorf("body is not the app shell: %s", raw)
 	}
 }
 
@@ -842,9 +853,9 @@ func TestHealthAndIndex(t *testing.T) {
 		t.Errorf("health body = %v", body)
 	}
 
-	status, _, raw = h.do(http.MethodGet, "/", "", nil)
+	status, _, raw = h.do(http.MethodGet, "/api", "", nil)
 	if status != http.StatusOK {
-		t.Fatalf("index status = %d", status)
+		t.Fatalf("discovery status = %d", status)
 	}
 	body = h.decode(raw)
 	if body["service"] != "MyCalendar" {
@@ -852,7 +863,58 @@ func TestHealthAndIndex(t *testing.T) {
 	}
 	endpoints, ok := body["endpoints"].([]any)
 	if !ok || len(endpoints) == 0 {
-		t.Fatalf("index has no endpoint list: %s", raw)
+		t.Fatalf("discovery document has no endpoint list: %s", raw)
+	}
+}
+
+// The root path belongs to the frontend; the JSON discovery document moved to
+// /api so that both a browser and an agent have a sensible entry point.
+func TestFrontendOwnsRootPath(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	for _, path := range []string{"/", "/some/route"} {
+		t.Run(path, func(t *testing.T) {
+			status, headers, raw := h.do(http.MethodGet, path, "", nil)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200", status)
+			}
+			if ct := headers.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+				t.Errorf("Content-Type = %q, want text/html", ct)
+			}
+			if !strings.Contains(string(raw), "<!doctype html>") {
+				t.Errorf("body is not the app shell: %s", raw)
+			}
+		})
+	}
+
+	t.Run("non-GET on the root is rejected", func(t *testing.T) {
+		status, headers, raw := h.do(http.MethodPost, "/", "{}", nil)
+		if status != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", status)
+		}
+		if got := headers.Get("Allow"); got != "GET, HEAD" {
+			t.Errorf("Allow = %q, want \"GET, HEAD\"", got)
+		}
+		if code := errorCode(t, h.decode(raw)); code != "method_not_allowed" {
+			t.Errorf("error code = %q", code)
+		}
+	})
+}
+
+// An unknown API path must stay on the JSON contract instead of being answered
+// with the single-page app.
+func TestUnknownAPIPathIsJSON(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	status, headers, raw := h.do(http.MethodGet, "/api/v1/nope", "", nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+	if ct := headers.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if code := errorCode(t, h.decode(raw)); code != "not_found" {
+		t.Errorf("error code = %q", code)
 	}
 }
 

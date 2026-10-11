@@ -1,0 +1,82 @@
+/**
+ * Timezone-aware helpers.
+ *
+ * Every request carries the browser's IANA timezone as `tz`, and the calendar
+ * is configured with the same zone. That shared choice is what lets the UI
+ * work with plain local wall-clock components (`getFullYear`, `getHours`, ...)
+ * instead of doing offset arithmetic by hand.
+ */
+
+/** The zone the API is queried with. */
+export const BROWSER_TZ: string =
+  Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+export function toUnixSeconds(date: Date): number {
+  return Math.floor(date.getTime() / 1000)
+}
+
+export function fromUnixSeconds(seconds: number): Date {
+  return new Date(seconds * 1000)
+}
+
+function pad(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** YYYY-MM-DD for a Date, in local wall-clock terms. */
+export function toDateOnly(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/** YYYY-MM-DDTHH:mm for `<input type="datetime-local">`. */
+export function toDateTimeLocal(date: Date): string {
+  return `${toDateOnly(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** Parse YYYY-MM-DD into a Date at local midnight. */
+export function parseDateOnly(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
+  if (!match) return null
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/**
+ * Parse a `datetime-local` value.
+ *
+ * The value has no offset, so it is read as wall-clock time in the browser
+ * zone, which is exactly the zone the calendar and the API are using.
+ */
+export function parseDateTimeLocal(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value.trim())
+  if (!match) return null
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    0,
+    0,
+  )
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+/** True when both instants fall on the same local calendar day. */
+export function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  )
+}
+
+/** HH:mm for display. */
+export function formatTime(date: Date): string {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/** A short human label such as "3月11日 13:00". */
+export function formatDateTime(date: Date): string {
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${formatTime(date)}`
+}

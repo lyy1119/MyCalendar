@@ -1,6 +1,6 @@
 # MyCalendar
 
-一个面向内网自部署的日历服务。Go 编写，SQLite 存储，只提供 HTTP API，不含前端。
+一个面向内网自部署的日历服务：Go 后端 + React 前端，SQLite 存储，单个二进制即可运行。
 
 设计目标是个人自用：**不做任何鉴权**，专注把事情做对——日程的增删改查、按日/周/月查询、以及正确的时区处理。数据模型只有 `events` 和 `reminders` 两张表。
 
@@ -15,6 +15,7 @@
 - [快速开始](#快速开始)
 - [配置项](#配置项)
 - [API 概览](#api-概览)
+- [前端](#前端)
 - [核心设计决策](#核心设计决策)
 - [测试](#测试)
 - [项目结构](#项目结构)
@@ -33,7 +34,9 @@
 5. **提醒（reminders）**：可写入、随日程返回，但**不发送**任何通知。
 6. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
 
-不包含（有意为之）：提醒推送、单独提醒接口、重复日程、跨多天的全天事件、鉴权/多用户、全文检索、前端。
+**前端**：React + FullCalendar，参考 Google Calendar 的深色版式，包含「4 天」与「周」两种视图、置顶的全天日程行、可滚动时间网格，点击日程即可编辑。
+
+不包含（有意为之）：提醒推送、单独提醒接口、重复日程、跨多天的全天事件、鉴权/多用户、全文检索。
 
 ---
 
@@ -52,6 +55,13 @@
 | HTTP 框架 | 标准库 `net/http` | 使用 Go 1.22+ 的 `ServeMux` 方法 + 通配符路由，无第三方路由依赖 |
 | 时区数据库 | 内嵌 `time/tzdata` | 部署机不需要安装 tzdata |
 | 测试 | 标准库 `testing` + `net/http/httptest` | 无第三方断言库 |
+| **Node.js** | **v24.20.0** | 仅构建前端时需要；后端不受影响 |
+| **npm** | **11.19.0** | 仓库内含 `package-lock.json`，请用 `npm ci` |
+| **React** | **19.3.0** | 前端框架 |
+| **FullCalendar** | **6.1.21** | 日历组件（core / react / timegrid / daygrid / interaction，版本必须一致） |
+| **Vite** | **8.3.4** | 前端构建工具 |
+| **TypeScript** | **5.9.3** | 类型检查 |
+| 浏览器验证（可选） | Playwright + Chromium | 仅 `web/e2e` 使用，不参与常规构建 |
 
 ### 依赖清单
 
@@ -78,8 +88,11 @@ github.com/lyy1119/MyCalendar
 ## 快速开始
 
 ```bash
-# 构建
-go build -o mycalendar ./cmd/mycalendar
+# 构建前端 + 后端，产出内嵌了界面的单个二进制
+make build
+
+# 只构建后端（不需要 Node 工具链，但不含界面）
+make build-backend
 
 # 运行（默认监听 :8080，数据库为当前目录下的 mycalendar.db）
 ./mycalendar
@@ -87,6 +100,8 @@ go build -o mycalendar ./cmd/mycalendar
 # 指定时区与地址
 MYCAL_TZ=Asia/Shanghai MYCAL_ADDR=127.0.0.1:8080 MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 ```
+
+打开 <http://127.0.0.1:8080/> 即是日历界面。前后端分离开发时用 `make dev`：后端在 :8080，Vite 开发服务器在 :5173 并把 `/api`、`/help`、`/healthz` 代理到后端，改前端代码即时热更新。
 
 查看文档：
 
@@ -157,7 +172,8 @@ curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/` | 服务信息与接口索引 |
+| GET | `/` | 日历前端（单页应用，兜底任何非 API 路径） |
+| GET | `/api` | 服务信息与接口索引（JSON，供程序/agent 使用） |
 | GET | `/help` | 完整 API 文档（JSON；`Accept: text/plain` 返回 Markdown） |
 | GET | `/healthz` | 存活与数据库健康检查 |
 | POST | `/api/v1/events` | 新建日程 |
@@ -167,6 +183,56 @@ curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1
 | DELETE | `/api/v1/events/{id}` | 删除日程（级联删除提醒） |
 
 约定：时间一律为 **Unix 秒**；日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
+
+路由分工：`/` 归前端（任何非 `/api` 开头的路径都会返回前端外壳，这样前端路由刷新不会 404），`/api/*` 归机器，未知的 `/api/*` 路径仍然返回 JSON 404 而不会被前端吞掉。JSON 版的接口索引位于 `/api`（原先在 `/`，前端接管根路径后迁移）。
+
+---
+
+## 前端
+
+`web/` 是 React + TypeScript 单页应用，用 **FullCalendar 6** 承担日历渲染。构建产物由 Vite 输出到 `internal/webui/dist/`，再通过 `go:embed` 打进二进制——所以内网部署只需要拷一个文件，也不存在跨域配置。
+
+### 视图与交互
+
+| 能力 | 实现 |
+|---|---|
+| 4 天视图 | 默认视图。FullCalendar 的自定义 `timeGrid` 视图（`duration: { days: 4 }`），免费版即可定义，不需要额外插件包 |
+| 周视图（本周） | `timeGridWeek`；`今天` 按钮回到当前周 |
+| 全天日程置顶 | `allDaySlot`，全天日程渲染在**日期表头下方、时间网格上方**的独立行里，不随时间滚动 |
+| 可滚动时间网格 | 日期表头与全天行固定，其下是**一个**滚动区，左时间轴固定、各天列共用该滚动区，因此各列小时线始终对齐（与截图一致） |
+| 点击日程编辑 | `eventClick` 打开编辑弹窗 |
+| 新建 | 在网格空白处**拖选**时间段，或点击全天行，或点侧栏「新建日程」 |
+| 增删查改 | 编辑弹窗内保存 / 删除，全部走既有 HTTP API |
+
+时间粒度 1 小时、每小时 48px，`scrollTime` 默认从 07:00 开始；有「当前时间」红线指示。
+
+刻意**没有**做拖拽改期：编辑统一走弹窗，避免一次误拖就改掉数据。
+
+### 时区
+
+前端把**浏览器的 IANA 时区**（`Intl.DateTimeFormat().resolvedOptions().timeZone`）同时用于两处：作为 `tz` 参数发给 API，以及作为 FullCalendar 的 `timeZone`。两边一致，界面才能直接用本地墙上时间运算，而不必手工做偏移换算。整天日程仍以 `event_date` 字符串传递，不经过 `Date`，因此不会被时区影响。
+
+### 与 API 的字段映射
+
+| 侧 | 表示 |
+|---|---|
+| API | `start_at`/`end_at` 为 Unix 秒；全天日程用 `event_date`（`YYYY-MM-DD`）定位 |
+| FullCalendar | 定时日程用 `Date` 对象，全天日程用日期字符串 |
+| 编辑弹窗 | 原生 `datetime-local` / `date` 输入框的字符串 |
+
+全天开关与 `event_date` 联动（与服务端规则一致）：打开全天则用日期、丢掉时间；关闭全天则把日期还原成 09:00–10:00，而不是午夜。
+
+另外：`end_at` 为 `null` 的日程在服务端语义上是「一个瞬时」，网格里会给它画 15 分钟的小块以免看不见——**这只是显示，不会写回数据库**。
+
+### 构建
+
+```bash
+make web-install   # cd web && npm ci
+make web           # 类型检查 + 打包到 internal/webui/dist
+make build         # 上面两步 + go build -tags webui_embedded
+```
+
+`webui_embedded` 是构建标签：不带该标签时 `internal/webui` 仍能编译，只是访问 `/` 会返回一页说明（告诉你如何构建前端），因此**没有 Node 环境也能 `go build` 和 `go test`**。构建产物不入库，`.gitignore` 已忽略 `internal/webui/dist/`。
 
 ---
 
@@ -238,11 +304,15 @@ start_at < :range_end AND COALESCE(end_at, start_at + 1) > :range_start
 ## 测试
 
 ```bash
-go test ./...                 # 全部测试
-go test -race -count=1 ./...  # 竞态检测
-go vet ./...                  # 静态检查
-gofmt -l .                    # 应为空
+make check                    # go vet + go test + 前端类型检查
+make test-embed               # 构建前端后再测，额外校验打包产物确实被内嵌
+make test-race                # 竞态检测
+go test ./...                 # 后端全部测试
+cd web && npm run typecheck   # 前端类型检查
+cd web && npm run build       # 前端构建
 ```
+
+后端的 `internal/webui` 测试用内存文件系统覆盖静态资源、SPA 兜底、缺失资源返回 404（而不是拿 HTML 顶替导致 MIME 报错）等行为；带 `webui_embedded` 标签时会额外校验真实打包产物存在且是生产版本。
 
 测试使用临时目录中的独立数据库，不依赖外部服务，也不依赖宿主机时区（时区相关用例显式指定 `Asia/Shanghai` / `America/New_York` / `UTC` 等）。
 
@@ -256,6 +326,11 @@ gofmt -l .                    # 应为空
 - **校验**：标题与备注长度上限（按字符计，CJK 友好）、提醒数量上限与去重排序、时间戳越界与"毫秒当成秒"的识别提示、非法 `tz`/`range`/`date`/`from,to` 组合。
 - **HTTP 层**：状态码与错误信封、未定义字段拒绝、带 `Allow` 头的 405、未知路径的 JSON 404、CORS 预检、`/help` 文档与实际路由及限额一致。
 - **并发**：24 个 goroutine 并发写入不出现 `database is locked`。
+- **前端路由**：`/` 归前端、未知 `/api/*` 仍返回 JSON 404、API 路径不会被 SPA 吞掉。
+
+### 浏览器端验证（可选）
+
+`web/e2e/verify.mjs` 用 Playwright 打开真实页面并断言那些单元测试看不到的东西：4 天视图确实是 4 列、周视图确实是 7 列、全天日程**在滚动区之外且位于时间网格上方**、各天列共用同一个滚动区、点击日程弹出并预填编辑框、保存/完成任务/拖选新建/全天行新建/删除都真正落库、以及整轮没有 console 报错。用法见 `web/e2e/README.md`；它需要额外下载浏览器，**不参与常规构建**，且运行前会清空 ±90 天内的日程，请只对测试库使用。
 
 ---
 
@@ -263,6 +338,13 @@ gofmt -l .                    # 应为空
 
 ```
 cmd/mycalendar/          程序入口：配置加载、优雅退出、HTTP 服务装配
+web/                     前端源码（React + TypeScript + FullCalendar）
+  ├── src/api.ts         API 客户端（时间一律 Unix 秒，附带浏览器时区）
+  ├── src/eventMapping.ts API / FullCalendar / 编辑弹窗三方的字段互转
+  ├── src/time.ts        时区与本地时间字符串工具
+  ├── src/components/    日历面板、编辑弹窗、侧栏
+  └── e2e/               可选的浏览器端验证
+internal/webui/          内嵌并托管前端产物（webui_embedded 构建标签）
 internal/api/            HTTP 层：路由、中间件、请求解析、错误映射
   ├── api.go             服务器装配、中间件（恢复/日志/CORS）、响应与错误信封
   ├── query.go           查询参数解析（tz、range/date、from/to、过滤、分页）
@@ -295,4 +377,5 @@ SQLite 连接使用 WAL 日志模式、`busy_timeout=5000`，并为每个连接�
 - WebSocket / SSE 推送变更，供客户端实时刷新。
 - 重复日程（需要在表上增加 recurrence 规则字段）。
 - 跨多天的全天事件（需要为全天引入结束日期字段）。
-- 前端界面。
+- 拖拽改期（当前刻意关闭，编辑统一走弹窗）。
+- 提醒的调度与推送界面（后端已存 `remind_at`，前端暂未展示）。

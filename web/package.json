@@ -1,0 +1,29 @@
+{
+  "name": "mycalendar-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Frontend for MyCalendar: a Google-Calendar-like week and 4-day view over the MyCalendar HTTP API.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fullcalendar/core": "6.1.21",
+    "@fullcalendar/daygrid": "6.1.21",
+    "@fullcalendar/interaction": "6.1.21",
+    "@fullcalendar/react": "6.1.21",
+    "@fullcalendar/timegrid": "6.1.21",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4"
+  }
+}

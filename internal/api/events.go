@@ -189,12 +189,22 @@ func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleIndex is the discovery document at the service root.
+// handleAPINotFound keeps unknown API paths on the JSON error contract rather
+// than letting them fall through to the single-page app.
+func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, http.StatusNotFound, errorEnvelope{Error: errorBody{
+		Code:    "not_found",
+		Message: "no such API endpoint; see /help for the API reference",
+	}})
+}
+
+// handleIndex is the discovery document, served at /api.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"service":     "MyCalendar",
 		"description": "A small self-hosted calendar API: events with reminders, queried by day, week or month.",
 		"version":     s.version,
+		"frontend":    "/",
 		"help":        "/help",
 		"health":      "/healthz",
 		"api_base":    "/api/v1",

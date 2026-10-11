@@ -21,6 +21,7 @@ import (
 	"github.com/lyy1119/MyCalendar/internal/apperr"
 	"github.com/lyy1119/MyCalendar/internal/calendar"
 	"github.com/lyy1119/MyCalendar/internal/service"
+	"github.com/lyy1119/MyCalendar/internal/webui"
 )
 
 // maxBodyBytes caps request bodies at 1 MiB.
@@ -33,16 +34,21 @@ type Options struct {
 	CORSOrigins      []string
 	AllowAllOrigins  bool
 	LogRequests      bool
+	// Frontend serves the single-page app. When nil, the handler from the
+	// webui package is used, which is either the embedded bundle or a
+	// placeholder page explaining how to build it.
+	Frontend http.Handler
 }
 
 // Server wires the domain service to HTTP handlers.
 type Server struct {
-	svc     *service.Service
-	log     *slog.Logger
-	opts    Options
-	version string
-	started time.Time
-	now     func() time.Time
+	svc      *service.Service
+	log      *slog.Logger
+	opts     Options
+	version  string
+	started  time.Time
+	now      func() time.Time
+	frontend http.Handler
 }
 
 // NewServer builds the API server. version is stamped at build time.
@@ -53,13 +59,18 @@ func NewServer(svc *service.Service, log *slog.Logger, version string, opts Opti
 	if opts.DefaultWeekStart == "" {
 		opts.DefaultWeekStart = calendar.Monday
 	}
+	frontend := opts.Frontend
+	if frontend == nil {
+		frontend = webui.Handler()
+	}
 	return &Server{
-		svc:     svc,
-		log:     log,
-		opts:    opts,
-		version: version,
-		started: time.Now(),
-		now:     time.Now,
+		svc:      svc,
+		log:      log,
+		opts:     opts,
+		version:  version,
+		started:  time.Now(),
+		now:      time.Now,
+		frontend: frontend,
 	}
 }
 
@@ -67,8 +78,11 @@ func NewServer(svc *service.Service, log *slog.Logger, version string, opts Opti
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Root and discovery.
-	mux.HandleFunc("GET /{$}", s.handleIndex)
+	// Machine-readable endpoints. The discovery document lives at /api now
+	// that / belongs to the frontend. Unknown /api paths are handled by the
+	// shared fallback below, not by a pattern here: a method-agnostic "/api/"
+	// pattern would collide with the method-agnostic 405 handlers.
+	mux.HandleFunc("GET /api", s.handleIndex)
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
@@ -83,8 +97,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/events/{id}", s.handleDeleteEvent)
 	mux.HandleFunc("/api/v1/events/{id}", s.methodNotAllowed("GET, PATCH, DELETE"))
 
-	// Anything else.
-	mux.HandleFunc("/", s.handleNotFound)
+	// One fallback owns everything else: unknown API paths, the single-page
+	// app and its client-side routes.
+	//
+	// It is deliberately method-agnostic and registered last. A "GET /"
+	// catch-all cannot coexist with the method-agnostic 405 handlers above,
+	// because ServeMux rejects overlapping patterns where neither is strictly
+	// more specific than the other.
+	mux.HandleFunc("/", s.handleFallback)
 
 	var h http.Handler = mux
 	h = s.withCORS(h)
@@ -331,15 +351,28 @@ func (s *Server) methodNotAllowed(allow string) http.HandlerFunc {
 	}
 }
 
-func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
-		s.methodNotAllowed("GET")(w, r)
+// handleFallback decides what happens for anything no explicit route matched.
+//
+// Three cases, in order: an unknown path under /api stays on the JSON error
+// contract; a read of anything else is handed to the single-page app, which
+// also makes client-side routes deep-linkable; and a write to anything else is
+// refused rather than being answered with a page.
+func (s *Server) handleFallback(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+		s.handleAPINotFound(w, r)
 		return
 	}
-	s.writeJSON(w, http.StatusNotFound, errorEnvelope{Error: errorBody{
-		Code:    "not_found",
-		Message: "no such endpoint; see /help for the API reference",
-	}})
+
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		s.writeJSON(w, http.StatusMethodNotAllowed, errorEnvelope{Error: errorBody{
+			Code:    "method_not_allowed",
+			Message: fmt.Sprintf("method %s is not supported on this path; allowed: GET, HEAD", r.Method),
+		}})
+		return
+	}
+
+	s.frontend.ServeHTTP(w, r)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
