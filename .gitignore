@@ -32,10 +32,23 @@ go.work.sum
 /mycalendar
 
 # Local SQLite database. It holds real calendar data, so it must never be
-# committed; the WAL sidecar files are ignored along with it.
+# committed; the WAL and shared-memory sidecar files are ignored along with it.
+#
+# MYCAL_DB accepts any path and SQLite itself accepts several extensions, so
+# every plausible spelling is listed: a rule that only covered "*.db" would let
+# `MYCAL_DB=./cal.sqlite` commit personal data.
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db3
+*.db3-wal
+*.db3-shm
 
 # Frontend dependencies and build output. The bundle is generated: `make build`
 # compiles it and embeds it into the binary, so it is never committed.
