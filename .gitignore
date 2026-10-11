@@ -28,6 +28,15 @@ go.work.sum
 # env file
 .env
 
+# Built binary
+/mycalendar
+
+# Local SQLite database. It holds real calendar data, so it must never be
+# committed; the WAL sidecar files are ignored along with it.
+*.db
+*.db-wal
+*.db-shm
+
 # Editor/IDE
 # .idea/
 # .vscode/

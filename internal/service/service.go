@@ -1,0 +1,291 @@
+// Package service holds MyCalendar's domain logic: it turns an optional-field
+// request body into a fully specified, validated event row.
+//
+// All "what does this field mean" decisions live here so that the HTTP layer
+// stays a thin translation of transport concerns, and the same rules apply no
+// matter which client calls the API.
+package service
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/lyy1119/MyCalendar/internal/apperr"
+	"github.com/lyy1119/MyCalendar/internal/calendar"
+	"github.com/lyy1119/MyCalendar/internal/model"
+	"github.com/lyy1119/MyCalendar/internal/store"
+)
+
+// Input limits enforced on write.
+const (
+	MaxTitleRunes   = 500
+	MaxNotesRunes   = 20000
+	MaxReminders    = 50
+	MaxQueryRunes   = 200
+	MaxPageSize     = 2000
+	DefaultPageSize = 0 // 0 means "no limit"
+)
+
+// Accepted range for Unix-second timestamps: 1970-01-01 through 2099-12-31.
+// The upper bound exists to catch the very common bug of sending milliseconds.
+const (
+	minTimestamp = int64(0)
+	maxTimestamp = int64(4102444800)
+)
+
+// Service implements event operations on top of the store.
+type Service struct {
+	store *store.Store
+	loc   *time.Location
+	now   func() time.Time
+}
+
+// New builds a Service bound to a store and a default location.
+func New(st *store.Store, loc *time.Location) *Service {
+	return &Service{store: st, loc: loc, now: time.Now}
+}
+
+// Store exposes the underlying store (used by health checks).
+func (s *Service) Store() *store.Store { return s.store }
+
+// Location returns the server's default timezone.
+func (s *Service) Location() *time.Location { return s.loc }
+
+// locOr falls back to the server timezone when no override was supplied.
+func (s *Service) locOr(loc *time.Location) *time.Location {
+	if loc == nil {
+		return s.loc
+	}
+	return loc
+}
+
+// Create validates and inserts a new event.
+//
+// loc overrides the server timezone for date derivation (nil uses the default).
+// It matters because an all-day event created from a bare start_at has its
+// event_date derived from that instant, and the caller's timezone decides
+// which calendar day that instant belongs to.
+func (s *Service) Create(ctx context.Context, in model.EventInput, loc *time.Location) (model.Event, error) {
+	ev, reminders, _, err := s.build(nil, in, s.locOr(loc))
+	if err != nil {
+		return model.Event{}, err
+	}
+	now := s.now().Unix()
+	ev.CreatedAt = now
+	ev.UpdatedAt = now
+	return s.store.CreateEvent(ctx, ev, reminders)
+}
+
+// Get loads one event by id.
+func (s *Service) Get(ctx context.Context, id int64) (model.Event, error) {
+	return s.store.GetEvent(ctx, id)
+}
+
+// List runs a range query.
+func (s *Service) List(ctx context.Context, f model.EventFilter) ([]model.Event, error) {
+	return s.store.ListEvents(ctx, f)
+}
+
+// Update applies a partial update to an existing event.
+func (s *Service) Update(ctx context.Context, id int64, in model.EventInput, loc *time.Location) (model.Event, error) {
+	cur, err := s.store.GetEvent(ctx, id)
+	if err != nil {
+		return model.Event{}, err
+	}
+	ev, reminders, replaceReminders, err := s.build(&cur, in, s.locOr(loc))
+	if err != nil {
+		return model.Event{}, err
+	}
+	ev.ID = id
+	ev.CreatedAt = cur.CreatedAt
+	ev.UpdatedAt = s.now().Unix()
+	return s.store.UpdateEvent(ctx, ev, reminders, replaceReminders)
+}
+
+// Delete removes an event and, by cascade, its reminders.
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	return s.store.DeleteEvent(ctx, id)
+}
+
+// build merges a request body onto cur (nil when creating) and normalises the
+// result. It returns the event to persist, the reminder set to apply, and
+// whether that reminder set should replace the stored one.
+func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Location) (model.Event, []model.ReminderInput, bool, error) {
+	verr := &apperr.Validation{}
+	creating := cur == nil
+
+	var ev model.Event
+	if cur != nil {
+		ev = *cur
+	}
+
+	// ---- scalar fields -------------------------------------------------
+
+	if in.Title.Set {
+		if in.Title.Value == nil {
+			verr.Add("title", "must not be null")
+		} else {
+			ev.Title = strings.TrimSpace(*in.Title.Value)
+		}
+	}
+	switch {
+	case ev.Title == "":
+		verr.Add("title", "is required and must not be empty")
+	case utf8.RuneCountInString(ev.Title) > MaxTitleRunes:
+		verr.Add("title", fmt.Sprintf("must be at most %d characters", MaxTitleRunes))
+	}
+
+	if in.Notes.Set {
+		if in.Notes.Value == nil {
+			ev.Notes = nil
+		} else {
+			n := *in.Notes.Value
+			if utf8.RuneCountInString(n) > MaxNotesRunes {
+				verr.Add("notes", fmt.Sprintf("must be at most %d characters", MaxNotesRunes))
+			}
+			ev.Notes = &n
+		}
+	}
+
+	if in.IsTask.Set && in.IsTask.Value != nil {
+		ev.IsTask = *in.IsTask.Value
+	}
+	if in.IsCompleted.Set && in.IsCompleted.Value != nil {
+		ev.IsCompleted = *in.IsCompleted.Value
+	}
+	if in.IsAllDay.Set && in.IsAllDay.Value != nil {
+		ev.IsAllDay = *in.IsAllDay.Value
+	} else if in.EventDate.Set {
+		// event_date and the anchoring move together: a concrete date means an
+		// all-day event, and null means a timed one. Treating null as "clear the
+		// column but stay all-day" would re-derive the very date the caller just
+		// removed, so the field would appear to ignore the request.
+		ev.IsAllDay = in.EventDate.Value != nil
+	}
+
+	// ---- time anchoring ------------------------------------------------
+
+	startSet, startVal := false, int64(0)
+	if in.StartAt.Set {
+		if in.StartAt.Value == nil {
+			verr.Add("start_at", "must not be null")
+		} else {
+			startSet, startVal = true, *in.StartAt.Value
+		}
+	}
+	endSet, endVal := false, int64(0)
+	if in.EndAt.Set {
+		if in.EndAt.Value == nil {
+			ev.EndAt = nil
+		} else {
+			endSet, endVal = true, *in.EndAt.Value
+		}
+	}
+	dateSet := in.EventDate.Set && in.EventDate.Value != nil
+	dateCleared := in.EventDate.Set && in.EventDate.Value == nil
+
+	if ev.IsAllDay {
+		// event_date is authoritative for all-day events. start_at and end_at
+		// are derived from it so that the stored row always describes exactly
+		// one local day; a supplied start_at is used only to derive the date.
+		dateStr := ""
+		switch {
+		case dateSet:
+			dateStr = *in.EventDate.Value
+		case startSet:
+			dateStr = time.Unix(startVal, 0).In(loc).Format(model.DateLayout)
+		case cur != nil && !dateCleared && cur.EventDate != nil:
+			dateStr = *cur.EventDate
+		case cur != nil:
+			dateStr = time.Unix(cur.StartAt, 0).In(loc).Format(model.DateLayout)
+		default:
+			verr.Add("event_date", "is required for an all-day event, or provide start_at to derive it")
+		}
+
+		if dateStr != "" {
+			day, err := calendar.ParseDate(dateStr, loc)
+			if err != nil {
+				verr.Add("event_date", "must be a real date formatted as YYYY-MM-DD")
+			} else {
+				dateStr = day.Format(model.DateLayout)
+				ev.EventDate = &dateStr
+				ev.StartAt = day.Unix()
+				ev.EndAt = ptr(calendar.AddDays(day, 1, loc).Unix())
+			}
+		}
+	} else {
+		// A timed event is located purely by absolute instants, so event_date
+		// carries no meaning and is cleared.
+		ev.EventDate = nil
+
+		switch {
+		case startSet:
+			ev.StartAt = startVal
+		case creating:
+			verr.Add("start_at", "is required for a timed event")
+		}
+
+		if endSet {
+			ev.EndAt = ptr(endVal)
+		}
+
+		validateTimestamp(verr, "start_at", ev.StartAt)
+		if ev.EndAt != nil {
+			validateTimestamp(verr, "end_at", *ev.EndAt)
+			if *ev.EndAt < ev.StartAt {
+				verr.Add("end_at", "must not be earlier than start_at")
+			}
+		}
+	}
+
+	// Completion only means something for a task.
+	if !ev.IsTask {
+		ev.IsCompleted = false
+	}
+
+	// ---- reminders -----------------------------------------------------
+
+	replaceReminders := in.Reminders.Set
+	var reminders []model.ReminderInput
+	if replaceReminders && in.Reminders.Value != nil {
+		list := *in.Reminders.Value
+		if len(list) > MaxReminders {
+			verr.Add("reminders", fmt.Sprintf("must contain at most %d entries", MaxReminders))
+		}
+		seen := make(map[int64]bool, len(list))
+		for i, r := range list {
+			if seen[r.RemindAt] {
+				continue // duplicate reminder times collapse into one
+			}
+			seen[r.RemindAt] = true
+			validateTimestamp(verr, fmt.Sprintf("reminders[%d].remind_at", i), r.RemindAt)
+			reminders = append(reminders, r)
+		}
+		slices.SortFunc(reminders, func(a, b model.ReminderInput) int {
+			return cmp.Compare(a.RemindAt, b.RemindAt)
+		})
+	}
+
+	if verr.Has() {
+		return model.Event{}, nil, false, verr
+	}
+	return ev, reminders, replaceReminders, nil
+}
+
+func validateTimestamp(verr *apperr.Validation, field string, ts int64) {
+	if ts >= minTimestamp && ts < maxTimestamp {
+		return
+	}
+	msg := fmt.Sprintf("must be a Unix timestamp in seconds between %d (1970-01-01) and %d (2099-12-31)", minTimestamp, maxTimestamp)
+	if ts >= maxTimestamp && ts < maxTimestamp*1000 {
+		msg += "; the value looks like milliseconds, but this API uses seconds"
+	}
+	verr.Add(field, msg)
+}
+
+func ptr[T any](v T) *T { return &v }
