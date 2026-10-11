@@ -119,10 +119,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export interface ListParams {
-  /** Inclusive lower bound, Unix seconds. */
-  from: number
-  /** Exclusive upper bound, Unix seconds. */
-  to: number
+  /**
+   * Inclusive lower bound: RFC3339 with an offset, or Unix seconds. A value
+   * without an offset is read in `tz`.
+   */
+  from: string
+  /** Exclusive upper bound, same encodings as `from`. */
+  to: string
   tz: string
   signal?: AbortSignal
 }
@@ -130,8 +133,8 @@ export interface ListParams {
 /** Events overlapping [from, to), in the given timezone. */
 export async function listEvents(params: ListParams): Promise<ApiEvent[]> {
   const query = new URLSearchParams({
-    from: String(params.from),
-    to: String(params.to),
+    from: params.from,
+    to: params.to,
     tz: params.tz,
   })
   const data = await request<{ events?: ApiEvent[] }>(`/api/v1/events?${query.toString()}`, {

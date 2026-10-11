@@ -822,10 +822,15 @@ func TestMalformedBodies(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
+		want string
 	}{
-		{"not json", `{"title":`},
-		{"wrong type", `{"title":"x","start_at":"soon"}`},
-		{"array instead of object", `[]`},
+		// A malformed body is a transport problem.
+		{"not json", `{"title":`, "invalid_body"},
+		{"array instead of object", `[]`, "invalid_body"},
+		// A timestamp field accepts a number or a string, so an array is the
+		// wrong JSON type while an unparsable string is a bad value.
+		{"wrong type for a timestamp", `{"title":"x","start_at":[1,2]}`, "invalid_body"},
+		{"unparsable timestamp", `{"title":"x","start_at":"soon"}`, "validation_failed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -833,9 +838,8 @@ func TestMalformedBodies(t *testing.T) {
 			if status != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400; body: %s", status, raw)
 			}
-			code := errorCode(t, h.decode(raw))
-			if code != "invalid_body" && code != "invalid_parameter" {
-				t.Errorf("error code = %q", code)
+			if code := errorCode(t, h.decode(raw)); code != tc.want {
+				t.Errorf("error code = %q, want %q", code, tc.want)
 			}
 		})
 	}

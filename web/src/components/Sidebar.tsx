@@ -47,13 +47,21 @@ export function Sidebar({ activeDate, onPickDate, onNew }: Props) {
           plugins={[dayGridPlugin, interactionPlugin]}
           initialView="dayGridMonth"
           locale={zhCn}
-          timeZone={BROWSER_TZ}
+          // See CalendarPane: a named zone would silently fall back to UTC.
           firstDay={1}
           headerToolbar={{ left: 'prev', center: 'title', right: 'next' }}
           height="auto"
           fixedWeekCount={false}
           showNonCurrentDates={false}
           dayMaxEvents={false}
+          // A bare day number: the locale default renders "12日", which is
+          // noise in a month grid.
+          //
+          // DayCellContentArg.date is a raw UTC-midnight marker, unlike the day
+          // header's converted Date, so it is read with the UTC getter. Cells
+          // belonging to a neighbouring month stay blank, matching
+          // showNonCurrentDates.
+          dayCellContent={(arg) => (arg.isOther ? '' : String(arg.date.getUTCDate()))}
           dateClick={(arg: DateClickArg) => onPickDate(arg.date)}
           dayCellClassNames={(arg) => (isSameDay(arg.date, activeDate) ? ['mc-mini-selected'] : [])}
         />

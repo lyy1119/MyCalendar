@@ -18,6 +18,7 @@
 import { chromium } from 'playwright'
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8080'
+const TZ = process.env.TZID ?? 'Asia/Shanghai'
 const results = []
 let failures = 0
 
@@ -37,9 +38,28 @@ async function api(path, init) {
 }
 
 const pad = (n) => String(n).padStart(2, '0')
-const dateOnly = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
-const atUtc = (base, offset, hour) =>
-  Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + offset, hour, 0, 0, 0)
+// All seeding is done in TZ, since that is the zone the grid and the API are
+// working in.
+const parts = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+const dateOnly = (d) => parts(d)
+const hourIn = (base, dayOffset, hour) => {
+  const [y, m, d] = parts(base).split('-').map(Number)
+  // Build the wall clock in TZ by asking the browser what that local time is.
+  return localEpoch(y, m, d + dayOffset, hour)
+}
+// Convert a wall clock in TZ to Unix seconds without assuming the harness zone.
+function localEpoch(y, m, d, hour) {
+  const asUtc = Date.UTC(y, m - 1, d, hour, 0, 0)
+  // Two passes are enough to settle the offset, including across a DST edge.
+  const guess = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  let ts = asUtc
+  for (let i = 0; i < 2; i++) {
+    const p = Object.fromEntries(guess.formatToParts(new Date(ts)).map((x) => [x.type, x.value]))
+    const shown = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute))
+    ts += asUtc - shown
+  }
+  return Math.floor(ts / 1000)
+}
 
 let browser
 
@@ -47,7 +67,7 @@ try {
   // ------------------------------------------------------------ clean slate
 
   const nowSec = Math.floor(Date.now() / 1000)
-  const existing = await api(`/api/v1/events?tz=UTC&from=${nowSec - 90 * 86400}&to=${nowSec + 90 * 86400}`)
+  const existing = await api(`/api/v1/events?tz=${encodeURIComponent(TZ)}&from=${nowSec - 90 * 86400}&to=${nowSec + 90 * 86400}`)
   const stale = existing.body?.events ?? []
   for (const e of stale) await api(`/api/v1/events/${e.id}`, { method: 'DELETE' })
   check('clean slate', true, `removed ${stale.length} pre-existing event(s)`)
@@ -55,24 +75,24 @@ try {
   // -------------------------------------------------------------- seed data
 
   const today = new Date()
-  const post = (body) => api('/api/v1/events?tz=UTC', { method: 'POST', body: JSON.stringify(body) })
+  const post = (body) => api(`/api/v1/events?tz=${encodeURIComponent(TZ)}`, { method: 'POST', body: JSON.stringify(body) })
 
   const allDay = await post({ title: '全天日程', event_date: dateOnly(today) })
   const timed = await post({
     title: '定时日程',
-    start_at: atUtc(today, 0, 10) / 1000,
-    end_at: atUtc(today, 0, 11) / 1000,
+    start_at: hourIn(today, 0, 10),
+    end_at: hourIn(today, 0, 11),
     notes: '备注内容',
   })
   const multiDay = await post({
     title: '跨天日程',
-    start_at: atUtc(today, 0, 9) / 1000,
-    end_at: atUtc(today, 2, 12) / 1000,
+    start_at: hourIn(today, 0, 9),
+    end_at: hourIn(today, 2, 12),
   })
   const task = await post({
     title: '任务日程',
-    start_at: atUtc(today, 1, 14) / 1000,
-    end_at: atUtc(today, 1, 15) / 1000,
+    start_at: hourIn(today, 1, 14),
+    end_at: hourIn(today, 1, 15),
     is_task: true,
   })
   check(
@@ -84,13 +104,25 @@ try {
   // ----------------------------------------------------------------- render
 
   browser = await chromium.launch()
-  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } })
+  // Deliberately a zone ahead of UTC. Running these checks in UTC once hid a
+  // real bug: a named timeZone is silently ignored by @fullcalendar/core and
+  // every event is drawn 8 hours early, which UTC cannot reveal.
+  const ctx = await browser.newContext({ timezoneId: TZ, viewport: { width: 1600, height: 900 } })
+  const page = await ctx.newPage()
   const consoleErrors = []
   page.on('console', (m) => {
     if (m.type() === 'error') consoleErrors.push(m.text())
   })
   page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message))
 
+  await page.addInitScript(() => {
+    const original = window.fetch
+    window.fetch = function (input, init) {
+      const url = typeof input === 'string' ? input : input?.url ?? ''
+      if (url.includes('/api/v1/events?') && !window.__mcWindow) window.__mcWindow = decodeURIComponent(url)
+      return original.apply(this, arguments)
+    }
+  })
   await page.goto(BASE + '/', { waitUntil: 'networkidle' })
   await page.waitForSelector('.mc-calendar .fc-timegrid-col', { timeout: 15000 })
   await page.waitForTimeout(500)
@@ -110,6 +142,9 @@ try {
     return {
       headerCells: root.querySelectorAll('.fc-col-header-cell').length,
       headerLabels: [...root.querySelectorAll('.fc-col-header-cell-cushion')].map((e) => e.textContent.trim()),
+      headerDates: [...root.querySelectorAll('.fc-col-header-cell')].map((e) => Number((e.getAttribute('data-date') ?? '').slice(8, 10))),
+      headerDays: [...root.querySelectorAll('.fc-col-header-cell-cushion')].map((e) => Number((e.textContent.match(/(\d+)/) ?? [])[1])),
+      requestedWindow: window.__mcWindow ?? null,
       axisCount: root.querySelectorAll('.fc-timegrid-axis').length,
       allDay: [...root.querySelectorAll('.fc-daygrid-event')].map(eventOf),
       timed: [...root.querySelectorAll('.fc-timegrid-event')].map(eventOf),
@@ -138,6 +173,19 @@ try {
     `allDayTop=${Math.round(allDayRow?.top ?? -1)} gridTop=${Math.round(layout.scrollerTop ?? -1)}`,
   )
 
+  // ---- the zone the grid works in
+  check(
+    'each day header names the day its column actually is',
+    layout.headerDays.length === layout.headerDates.length &&
+      layout.headerDays.every((n, i) => n === layout.headerDates[i]),
+    `${layout.headerDays.join(',')} vs ${layout.headerDates.join(',')}`,
+  )
+  check(
+    'the grid asks for a window in the browser timezone',
+    layout.requestedWindow?.includes('+08:00') || layout.requestedWindow?.endsWith('Z'),
+    layout.requestedWindow,
+  )
+
   const titles = layout.timed.map((e) => e.title)
   check('the timed event is in the grid', titles.some((t) => t.includes('定时日程')))
   check('the multi-day event is in the grid', titles.some((t) => t.includes('跨天日程')))
@@ -160,6 +208,32 @@ try {
 
   await page.locator('.mc-calendar .fc-fourDay-button').click()
   await page.waitForTimeout(600)
+
+  // ---- a wall clock typed into the dialog must be the wall clock drawn
+  {
+    const firstDay = await page.evaluate(() => document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date'))
+    await page.locator('.mc-new-btn').click()
+    await page.waitForSelector('.mc-dialog', { timeout: 5000 })
+    await page.locator('.mc-dialog input').first().fill('时刻探针')
+    await page.locator('.mc-dialog input[type="datetime-local"]').first().fill(`${firstDay}T21:00`)
+    await page.locator('.mc-dialog input[type="datetime-local"]').nth(1).fill(`${firstDay}T22:30`)
+    await page.locator('.mc-dialog button[type="submit"]').click()
+    await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
+    await page.waitForTimeout(800)
+
+    const stored = (await api(`/api/v1/events?range=day&date=${firstDay}&tz=${encodeURIComponent(TZ)}`)).body?.events?.find((e) => e.title === '时刻探针')
+    check(
+      'a typed wall clock is stored as the instant it names',
+      stored?.start_at_local === `${firstDay}T21:00:00+08:00` || /T21:00:00/.test(stored?.start_at_local ?? ''),
+      `${stored?.start_at} / ${stored?.start_at_local}`,
+    )
+    const drawn = await page.evaluate(() => {
+      const root = document.querySelector('.mc-calendar')
+      const ev = [...root.querySelectorAll('.fc-timegrid-event')].find((e) => e.textContent.includes('时刻探针'))
+      return ev ? ev.textContent.trim() : null
+    })
+    check('the grid draws it at the same wall clock', /21:00/.test(drawn ?? ''), `drawn=${drawn}`)
+  }
 
   // ------------------------------------------- click through to the editor
 
@@ -185,7 +259,7 @@ try {
   await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
   await page.waitForTimeout(700)
 
-  const afterEdit = await api(`/api/v1/events/${timed.body.id}?tz=UTC`)
+  const afterEdit = await api(`/api/v1/events/${timed.body.id}?tz=${encodeURIComponent(TZ)}`)
   check('saving persists the new title', afterEdit.body?.title === '定时日程（已改名）', `title=${afterEdit.body?.title}`)
   check('saving leaves untouched fields alone', afterEdit.body?.notes === '备注内容', `notes=${afterEdit.body?.notes}`)
   check('the grid shows the new title', (await page.locator('.mc-calendar .fc-timegrid-event', { hasText: '已改名' }).count()) > 0)
@@ -197,7 +271,7 @@ try {
   await page.locator('.mc-dialog button[type="submit"]').click()
   await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
   await page.waitForTimeout(600)
-  const afterComplete = await api(`/api/v1/events/${task.body.id}?tz=UTC`)
+  const afterComplete = await api(`/api/v1/events/${task.body.id}?tz=${encodeURIComponent(TZ)}`)
   check('a task can be marked complete', afterComplete.body?.is_completed === true, `is_completed=${afterComplete.body?.is_completed}`)
 
   // ------------------------------------------------- create by dragging
@@ -226,7 +300,7 @@ try {
   await page.waitForTimeout(700)
 
   const lastDay = new Date(today.getTime() + 3 * 86400000)
-  const created = await api(`/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=UTC`)
+  const created = await api(`/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=${encodeURIComponent(TZ)}`)
   check('the dragged event was persisted', (created.body?.events ?? []).some((e) => e.title === '新建的日程'), (created.body?.events ?? []).map((e) => e.title).join('|'))
   check('the new event appears in the grid', (await page.locator('.mc-calendar .fc-timegrid-event', { hasText: '新建的日程' }).count()) > 0)
 
@@ -243,7 +317,7 @@ try {
   await page.waitForTimeout(700)
 
   const dayAfter = dateOnly(new Date(today.getTime() + 86400000))
-  const allDayList = await api(`/api/v1/events?range=day&date=${dayAfter}&tz=UTC`)
+  const allDayList = await api(`/api/v1/events?range=day&date=${dayAfter}&tz=${encodeURIComponent(TZ)}`)
   check(
     'the all-day event was persisted as all-day',
     (allDayList.body?.events ?? []).some((e) => e.title === '新建全天' && e.is_all_day === true),
@@ -258,7 +332,7 @@ try {
   await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
   await page.waitForTimeout(700)
 
-  const after = await api(`/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=UTC`)
+  const after = await api(`/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=${encodeURIComponent(TZ)}`)
   check('deleting removes the event', !(after.body?.events ?? []).some((e) => e.title === '新建的日程'), (after.body?.events ?? []).map((e) => e.title).join('|'))
 
   // ----------------------------------------------------------- navigation

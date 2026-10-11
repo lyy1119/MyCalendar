@@ -23,10 +23,10 @@ export default function App() {
   const [loading, setLoading] = useState(false)
 
   // The range currently on screen, so mutations can refresh exactly that.
-  const rangeRef = useRef<{ from: number; to: number } | null>(null)
+  const rangeRef = useRef<{ from: string; to: string } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  const load = useCallback(async (from: number, to: number) => {
+  const load = useCallback(async (from: string, to: string) => {
     // A newer request supersedes an in-flight one; without this, a fast
     // sequence of week navigations can land results out of order.
     abortRef.current?.abort()
@@ -61,10 +61,12 @@ export default function App() {
 
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
-      // arg.start is inclusive, arg.end exclusive, exactly the half-open
-      // window the list endpoint documents.
-      const from = Math.floor(arg.start.getTime() / 1000)
-      const to = Math.floor(arg.end.getTime() / 1000)
+      // startStr/endStr are the window as ISO strings carrying the zone offset.
+      // They are used rather than start/end Date objects because those are
+      // UTC-midnight markers, and converting one with getTime() silently shifts
+      // the window by the zone offset -- which drops events near midnight.
+      const from = arg.startStr
+      const to = arg.endStr
       rangeRef.current = { from, to }
       setActiveDate(arg.view.currentStart)
       void load(from, to)

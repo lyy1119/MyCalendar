@@ -9,7 +9,7 @@ import zhCn from '@fullcalendar/core/locales/zh-cn'
 
 import type { ApiEvent } from '../api'
 import { toCalendarEvent } from '../eventMapping'
-import { BROWSER_TZ } from '../time'
+import { WEEKDAY_SHORT } from '../time'
 
 interface Props {
   events: ApiEvent[]
@@ -49,13 +49,21 @@ export function CalendarPane({
         timeGridWeek: { buttonText: '周' },
       }}
       locale={zhCn}
-      // The same zone the API is queried with, so the grid and the server
-      // agree on where a day starts.
-      timeZone={BROWSER_TZ}
+      // Deliberately NOT timeZone="Asia/Shanghai": @fullcalendar/core ships no
+      // named-timezone implementation, so a named zone silently degrades to UTC
+      // (no warning) and every event is drawn at the wrong hour. The default,
+      // 'local', uses the browser's own zone -- which is exactly the zone the
+      // API is queried with, so the grid and the server still agree.
       firstDay={1}
       headerToolbar={{ left: 'prev,next today', center: 'title', right: 'fourDay,timeGridWeek' }}
       buttonText={{ today: '今天' }}
-      dayHeaderFormat={{ weekday: 'short', day: 'numeric' }}
+      // "周一 12" rather than the locale default "12日周一".
+      //
+      // DayHeaderContentArg.date is a real Date already converted into the
+      // calendar's zone, so it must be read with local getters. Using
+      // getUTCDate() here reads a zone-shifted value and reports the wrong day
+      // for any zone ahead of UTC.
+      dayHeaderContent={(arg) => `${WEEKDAY_SHORT.format(arg.date)} ${arg.date.getDate()}`}
       // The all-day events get their own band above the scrolling hours.
       allDaySlot
       allDayText="全天"

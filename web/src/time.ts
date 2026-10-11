@@ -7,6 +7,15 @@
  * instead of doing offset arithmetic by hand.
  */
 
+/**
+ * Weekday label for a day header.
+ *
+ * The header's `date` is a real Date already converted into the calendar's
+ * zone, and the calendar runs in the browser's own zone, so the default
+ * (local) formatting is the right one.
+ */
+export const WEEKDAY_SHORT = new Intl.DateTimeFormat('zh-CN', { weekday: 'short' })
+
 /** The zone the API is queried with. */
 export const BROWSER_TZ: string =
   Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'

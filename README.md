@@ -182,7 +182,17 @@ curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1
 | PATCH | `/api/v1/events/{id}` | 部分更新 |
 | DELETE | `/api/v1/events/{id}` | 删除日程（级联删除提醒） |
 
-约定：时间一律为 **Unix 秒**；日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
+约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
+
+时间戳的**输入**有三种等价写法，**存储**始终是 UTC 基准的 Unix 秒，不会因为你用哪种写法而改变：
+
+| 写法 | 例子 | 含义 |
+|---|---|---|
+| Unix 秒 | `1773205200` | 绝对瞬时 |
+| 带偏移的 RFC3339 | `"2026-03-11T13:00:00+08:00"` | 绝对瞬时，与 `tz` 无关 |
+| 不带偏移的本地时间 | `"2026-03-11T13:00"` | **按本次请求的 `tz` 解释** |
+
+响应里除了 `start_at`/`end_at`（Unix 秒）之外，还给出 `start_at_local`/`end_at_local`（同一瞬时在本次请求 `tz` 下渲染的 RFC3339）。`from`/`to` 查询参数接受同样的三种写法。
 
 路由分工：`/` 归前端（任何非 `/api` 开头的路径都会返回前端外壳，这样前端路由刷新不会 404），`/api/*` 归机器，未知的 `/api/*` 路径仍然返回 JSON 404 而不会被前端吞掉。JSON 版的接口索引位于 `/api`（原先在 `/`，前端接管根路径后迁移）。
 
@@ -210,7 +220,15 @@ curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1
 
 ### 时区
 
-前端把**浏览器的 IANA 时区**（`Intl.DateTimeFormat().resolvedOptions().timeZone`）同时用于两处：作为 `tz` 参数发给 API，以及作为 FullCalendar 的 `timeZone`。两边一致，界面才能直接用本地墙上时间运算，而不必手工做偏移换算。整天日程仍以 `event_date` 字符串传递，不经过 `Date`，因此不会被时区影响。
+前端用**浏览器的 IANA 时区**（`Intl.DateTimeFormat().resolvedOptions().timeZone`）作为 `tz` 参数发给 API；日历本身则使用 FullCalendar 的默认时区 `local`（即浏览器本地时区），两者因此天然一致。
+
+> **不要给 FullCalendar 传 `timeZone="Asia/Shanghai"` 这类具名时区。** `@fullcalendar/core` 自身并不带具名时区实现（`namedTimeZoneImpl` 必须由插件提供），传了具名时区会**静默退化为 UTC**——不报警告，但所有日程都会被画到错误的时刻（东八区差 8 小时），`datesSet` 交回的窗口边界也会变成 UTC 零点，导致跨午夜的日程取不到。这个问题在 UTC 环境下测试时完全看不出来，所以浏览器端验证固定跑在 `Asia/Shanghai`。
+
+取数窗口用 `datesSet` 的 `startStr`/`endStr`（带偏移的 ISO 字符串），而不是 `start`/`end` 这两个 Date 对象：后者是"UTC 零点的标记值"，直接 `.getTime()` 会把窗口整体平移一个时区偏移。
+
+整天日程仍以 `event_date` 字符串传递，不经过 `Date`，因此不会被时区影响。
+
+另外两个钩子的语义不同，不能混用取值方式：`dayHeaderContent` 的 `arg.date` 是**已转换到日历时区的真实 Date**（用 `getDate()`），而 `dayCellContent` 的 `arg.date` 是**原始的 UTC 零点标记**（用 `getUTCDate()`）。用错会让日期整体差一天。
 
 ### 与 API 的字段映射
 
@@ -322,11 +340,14 @@ cd web && npm run build       # 前端构建
 - **相交语义**：跨天日程、跨午夜日程、恰好结束于窗口起点的日程（不应命中）、无 `end_at` 的瞬时日程恰好落在窗口第一秒（应命中）。
 - **全天日程的时区稳定性**：同一个全天日程在上海、UTC、纽约、Kiritimati、Midway 下的"当天"查询都能命中。
 - **时区只影响解释**：同一瞬时在 UTC 与上海下落到不同日期，且数据未被改写。
+- **三种时间写法等价**：Unix 秒、带偏移的 RFC3339、不带偏移的本地时间解析出同一瞬时；不带偏移的写法按请求 `tz` 解释，换个 `tz` 就换个瞬时。
+- **时区回归**：浏览器端验证固定跑在 `Asia/Shanghai`（UTC 之前跑过一次，恰好掩盖了一个真实缺陷，见下）。
 - **PATCH 语义**：缺省/置空/赋值三态、`{}` 空操作、全天与定时相互转换、`created_at` 不变而 `updated_at` 刷新。
 - **校验**：标题与备注长度上限（按字符计，CJK 友好）、提醒数量上限与去重排序、时间戳越界与"毫秒当成秒"的识别提示、非法 `tz`/`range`/`date`/`from,to` 组合。
 - **HTTP 层**：状态码与错误信封、未定义字段拒绝、带 `Allow` 头的 405、未知路径的 JSON 404、CORS 预检、`/help` 文档与实际路由及限额一致。
 - **并发**：24 个 goroutine 并发写入不出现 `database is locked`。
 - **前端路由**：`/` 归前端、未知 `/api/*` 仍返回 JSON 404、API 路径不会被 SPA 吞掉。
+- **浏览器时区一致性**：日期表头显示的日子必须与列实际的日期一致；请求窗口必须是浏览器时区的零点；弹窗里手填的墙上时间必须原样画回网格。
 
 ### 浏览器端验证（可选）
 

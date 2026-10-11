@@ -7,7 +7,9 @@
 package calendar
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,6 +114,44 @@ func ParseDate(s string, loc *time.Location) (time.Time, error) {
 		return time.Time{}, apperr.Param("date", "is not a real calendar date")
 	}
 	return t, nil
+}
+
+// timeLayouts are the offset-free forms accepted for a wall-clock timestamp.
+// They are read in the caller's timezone, which is what lets a client send
+// "2026-03-11T13:00" and mean its own 13:00.
+var timeLayouts = []string{
+	"2006-01-02T15:04:05",
+	"2006-01-02T15:04",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04",
+	"2006-01-02",
+}
+
+// ParseInstant reads an instant written in any of the forms the API accepts:
+//
+//   - Unix seconds, e.g. 1773205200
+//   - RFC3339 with an offset, e.g. 2026-03-11T13:00:00+08:00 (absolute)
+//   - a wall-clock time without an offset, e.g. 2026-03-11T13:00 (read in loc)
+//
+// The result is always an absolute instant; nothing about loc is stored.
+func ParseInstant(raw string, loc *time.Location) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, errors.New("must not be empty")
+	}
+
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return time.Unix(seconds, 0).In(loc), nil
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t.In(loc), nil
+	}
+	for _, layout := range timeLayouts {
+		if t, err := time.ParseInLocation(layout, value, loc); err == nil {
+			return t.In(loc), nil
+		}
+	}
+	return time.Time{}, errors.New("must be Unix seconds, an RFC3339 timestamp such as 2026-03-11T13:00:00+08:00, or a local timestamp such as 2026-03-11T13:00")
 }
 
 // Day returns the window covering the whole of the day containing date.

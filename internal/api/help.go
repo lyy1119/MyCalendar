@@ -169,7 +169,7 @@ func (s *Server) buildHelp() helpDoc {
 		Conventions: helpConventions{
 			BasePath:         "/api/v1",
 			ContentType:      "Requests with a body must send Content-Type: application/json. Responses are always application/json; charset=utf-8.",
-			TimeEncoding:     "All instants are Unix timestamps in whole seconds, UTC-based. Calendar dates are separate strings in YYYY-MM-DD form.",
+			TimeEncoding:     "Instants are stored as Unix timestamps in whole seconds, UTC-based, and every response carries them as start_at and end_at. A timestamp may be sent in any of three forms: Unix seconds (1773205200), RFC3339 with an offset (2026-03-11T13:00:00+08:00), or a wall-clock value with no offset (2026-03-11T13:00) which is read in the tz of the request. Responses additionally carry start_at_local and end_at_local, the same instant rendered as RFC3339 in the request timezone.",
 			IntervalStyle:    "Every time window is half-open: [start, end). A window contains an instant if start <= instant < end.",
 			UnknownFields:    "Rejected with 400 invalid_parameter. A misspelled field never silently disappears.",
 			EmptyCollections: "List endpoints return [] rather than null. reminders is always an array.",
@@ -188,6 +188,7 @@ func (s *Server) buildHelp() helpDoc {
 				"When tz is absent, the server default is used.",
 				"Day, week and month boundaries are built from local wall-clock midnight, so a day is 23, 24 or 25 hours long across a DST transition. The service ships with an embedded copy of the IANA database, so zone rules do not depend on the host's tzdata.",
 				"The derived start_at_local and end_at_local fields in responses are rendered in the request's tz and are read-only.",
+				"Timestamps may be sent either as Unix seconds or as strings. A string carrying an offset (2026-03-11T13:00:00+08:00) is absolute and tz does not affect it; a string without one (2026-03-11T13:00) is wall-clock time in tz. Either way the stored value is the same absolute instant, so records written by clients in different timezones stay comparable.",
 			},
 		},
 		DataModel: []helpTable{
@@ -313,7 +314,7 @@ func (s *Server) buildHelp() helpDoc {
 				Parameters: []string{
 					"range=day|week|month -- window kind, default day",
 					"date=YYYY-MM-DD -- anchor day for the window, default today",
-					"from, to -- explicit half-open window as RFC3339 or Unix seconds; mutually exclusive with range/date",
+					"from, to -- explicit half-open window as Unix seconds, RFC3339, or an offset-free local timestamp; mutually exclusive with range/date",
 					"tz -- IANA timezone deciding the window boundaries",
 					"week_start=monday|sunday -- overrides the server default for range=week",
 					"is_task=true|false -- keep only tasks or only non-tasks",
@@ -363,8 +364,8 @@ func (s *Server) buildHelp() helpDoc {
 		BodyFields: []helpField{
 			{Name: "title", Type: "string", Required: "yes on POST", Nullable: "no", Description: "Event title."},
 			{Name: "notes", Type: "string", Required: "no", Nullable: "yes", Description: "Free-form notes. null clears them on PATCH."},
-			{Name: "start_at", Type: "integer", Required: "yes on POST for a timed event", Nullable: "no", Description: "Start instant in Unix seconds. On an all-day event it is accepted only to derive the date."},
-			{Name: "end_at", Type: "integer", Required: "no", Nullable: "yes", Description: "Exclusive end instant in Unix seconds. null clears it, and the event then covers a single instant."},
+			{Name: "start_at", Type: "integer or string", Required: "yes on POST for a timed event", Nullable: "no", Description: "Start instant, as Unix seconds or as a timestamp string (RFC3339 with an offset, or an offset-free local value read in tz). Stored as an absolute instant, so the timezone you send it in never changes what is stored. On an all-day event it is accepted only to derive the date."},
+			{Name: "end_at", Type: "integer or string", Required: "no", Nullable: "yes", Description: "Exclusive end instant, same encodings as start_at. null clears it, and the event then covers a single instant."},
 			{Name: "is_all_day", Type: "boolean", Required: "no", Default: "false", Description: "Marks the event as all-day. Inferred as true when a non-null event_date is sent."},
 			{Name: "event_date", Type: "string", Required: "yes for an all-day event", Nullable: "yes", Description: "Calendar date YYYY-MM-DD. Sending it also sets is_all_day. null clears it and the event becomes timed."},
 			{Name: "is_task", Type: "boolean", Required: "no", Default: "false", Description: "Marks the event as a completable task."},

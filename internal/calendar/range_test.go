@@ -231,3 +231,58 @@ func TestWindowIntersects(t *testing.T) {
 		})
 	}
 }
+
+// The API accepts an instant as seconds, as RFC3339 with an offset, or as a
+// wall-clock value read in the caller's timezone.
+func TestParseInstant(t *testing.T) {
+	shanghai := mustLoad(t, "Asia/Shanghai")
+	// 2026-03-11T13:00:00+08:00
+	const want int64 = 1773205200
+
+	tests := []struct {
+		name string
+		in   string
+		loc  *time.Location
+		want int64
+	}{
+		{"unix seconds", "1773205200", shanghai, want},
+		{"rfc3339 with offset", "2026-03-11T13:00:00+08:00", shanghai, want},
+		{"rfc3339 in utc", "2026-03-11T05:00:00Z", shanghai, want},
+		{"local datetime", "2026-03-11T13:00:00", shanghai, want},
+		{"local datetime without seconds", "2026-03-11T13:00", shanghai, want},
+		{"local datetime with a space", "2026-03-11 13:00:00", shanghai, want},
+		{"local date only means midnight", "2026-03-11", shanghai, 1773158400},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseInstant(tc.in, tc.loc)
+			if err != nil {
+				t.Fatalf("ParseInstant(%q): %v", tc.in, err)
+			}
+			if got.Unix() != tc.want {
+				t.Errorf("ParseInstant(%q) = %d, want %d", tc.in, got.Unix(), tc.want)
+			}
+		})
+	}
+
+	t.Run("an offset-free value is read in the given zone", func(t *testing.T) {
+		utc, err := ParseInstant("2026-03-11T13:00:00", time.UTC)
+		if err != nil {
+			t.Fatalf("ParseInstant: %v", err)
+		}
+		if utc.Unix() == want {
+			t.Error("an offset-free value ignored the zone it was given")
+		}
+		if utc.UTC().Format(time.RFC3339) != "2026-03-11T13:00:00Z" {
+			t.Errorf("UTC reading = %s", utc.UTC().Format(time.RFC3339))
+		}
+	})
+
+	for _, bad := range []string{"", "   ", "soon", "2026-13-45T99:99", "tomorrow"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			if _, err := ParseInstant(bad, shanghai); err == nil {
+				t.Errorf("ParseInstant(%q) succeeded, want an error", bad)
+			}
+		})
+	}
+}

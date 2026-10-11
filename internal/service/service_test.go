@@ -32,6 +32,15 @@ func set[T any](v T) model.Optional[T] { return model.Optional[T]{Set: true, Val
 
 func null[T any]() model.Optional[T] { return model.Optional[T]{Set: true, Value: nil} }
 
+// secs is a timestamp given as Unix seconds.
+func secs(v int64) model.FlexTime { return model.FlexTime{Set: true, Number: &v} }
+
+// at is a timestamp given as a string, resolved against the request timezone.
+func at(v string) model.FlexTime { return model.FlexTime{Set: true, Text: &v} }
+
+// nullTime is an explicit JSON null for a timestamp field.
+func nullTime() model.FlexTime { return model.FlexTime{Set: true} }
+
 // mustInvalid runs a create and asserts it fails with a field-level error on
 // the named field.
 func mustInvalid(t *testing.T, svc *Service, in model.EventInput, field string) {
@@ -65,7 +74,7 @@ func TestCreateTrimsTitleAndRequiresIt(t *testing.T) {
 
 	ev, err := svc.Create(context.Background(), model.EventInput{
 		Title:   set("  Padded title  "),
-		StartAt: set(int64(1_000_000)),
+		StartAt: secs(1_000_000),
 	}, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -74,9 +83,9 @@ func TestCreateTrimsTitleAndRequiresIt(t *testing.T) {
 		t.Errorf("title = %q, want it trimmed", ev.Title)
 	}
 
-	mustInvalid(t, svc, model.EventInput{Title: set("   "), StartAt: set(int64(1))}, "title")
-	mustInvalid(t, svc, model.EventInput{StartAt: set(int64(1))}, "title")
-	mustInvalid(t, svc, model.EventInput{Title: null[string](), StartAt: set(int64(1))}, "title")
+	mustInvalid(t, svc, model.EventInput{Title: set("   "), StartAt: secs(1)}, "title")
+	mustInvalid(t, svc, model.EventInput{StartAt: secs(1)}, "title")
+	mustInvalid(t, svc, model.EventInput{Title: null[string](), StartAt: secs(1)}, "title")
 }
 
 func TestLengthLimits(t *testing.T) {
@@ -84,26 +93,26 @@ func TestLengthLimits(t *testing.T) {
 	ctx := context.Background()
 
 	atLimit := strings.Repeat("a", MaxTitleRunes)
-	if _, err := svc.Create(ctx, model.EventInput{Title: set(atLimit), StartAt: set(int64(1))}, nil); err != nil {
+	if _, err := svc.Create(ctx, model.EventInput{Title: set(atLimit), StartAt: secs(1)}, nil); err != nil {
 		t.Errorf("title at the limit was rejected: %v", err)
 	}
 
 	overLimit := strings.Repeat("a", MaxTitleRunes+1)
-	mustInvalid(t, svc, model.EventInput{Title: set(overLimit), StartAt: set(int64(1))}, "title")
+	mustInvalid(t, svc, model.EventInput{Title: set(overLimit), StartAt: secs(1)}, "title")
 
 	notesOver := strings.Repeat("n", MaxNotesRunes+1)
 	mustInvalid(t, svc, model.EventInput{
 		Title:   set("ok"),
-		StartAt: set(int64(1)),
+		StartAt: secs(1),
 		Notes:   set(notesOver),
 	}, "notes")
 
 	// Counting characters rather than bytes matters for non-ASCII titles.
 	cjk := strings.Repeat("日", MaxTitleRunes)
-	if _, err := svc.Create(ctx, model.EventInput{Title: set(cjk), StartAt: set(int64(1))}, nil); err != nil {
+	if _, err := svc.Create(ctx, model.EventInput{Title: set(cjk), StartAt: secs(1)}, nil); err != nil {
 		t.Errorf("a %d-character CJK title was rejected: %v", MaxTitleRunes, err)
 	}
-	mustInvalid(t, svc, model.EventInput{Title: set(cjk + "日"), StartAt: set(int64(1))}, "title")
+	mustInvalid(t, svc, model.EventInput{Title: set(cjk + "日"), StartAt: secs(1)}, "title")
 }
 
 func TestReminderLimitsAndNormalisation(t *testing.T) {
@@ -115,13 +124,13 @@ func TestReminderLimitsAndNormalisation(t *testing.T) {
 	}
 	mustInvalid(t, svc, model.EventInput{
 		Title:     set("too many"),
-		StartAt:   set(int64(1)),
+		StartAt:   secs(int64(1)),
 		Reminders: set(tooMany),
 	}, "reminders")
 
 	ev, err := svc.Create(context.Background(), model.EventInput{
 		Title:   set("dedupe"),
-		StartAt: set(int64(1)),
+		StartAt: secs(1),
 		Reminders: set([]model.ReminderInput{
 			{RemindAt: 300},
 			{RemindAt: 100},
@@ -148,15 +157,15 @@ func TestTimestampBounds(t *testing.T) {
 	// The accepted window is [0, maxTimestamp).
 	if _, err := svc.Create(context.Background(), model.EventInput{
 		Title:   set("epoch"),
-		StartAt: set(int64(0)),
+		StartAt: secs(0),
 	}, nil); err != nil {
 		t.Errorf("timestamp 0 was rejected: %v", err)
 	}
 
-	mustInvalid(t, svc, model.EventInput{Title: set("negative"), StartAt: set(int64(-1))}, "start_at")
-	mustInvalid(t, svc, model.EventInput{Title: set("too far"), StartAt: set(maxTimestamp)}, "start_at")
-	mustInvalid(t, svc, model.EventInput{Title: set("ms"), StartAt: set(maxTimestamp * 2)}, "start_at")
-	mustInvalid(t, svc, model.EventInput{Title: set("no start"), StartAt: null[int64]()}, "start_at")
+	mustInvalid(t, svc, model.EventInput{Title: set("negative"), StartAt: secs(int64(-1))}, "start_at")
+	mustInvalid(t, svc, model.EventInput{Title: set("too far"), StartAt: secs(maxTimestamp)}, "start_at")
+	mustInvalid(t, svc, model.EventInput{Title: set("ms"), StartAt: secs(maxTimestamp * 2)}, "start_at")
+	mustInvalid(t, svc, model.EventInput{Title: set("no start"), StartAt: nullTime()}, "start_at")
 }
 
 func TestAllDayNormalisation(t *testing.T) {
@@ -209,7 +218,7 @@ func TestAllDayDerivedFromStartAtUsesProvidedLocation(t *testing.T) {
 	utcEvent, err := svc.Create(ctx, model.EventInput{
 		Title:    set("utc"),
 		IsAllDay: set(true),
-		StartAt:  set(instant),
+		StartAt:  secs(instant),
 	}, nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -221,7 +230,7 @@ func TestAllDayDerivedFromStartAtUsesProvidedLocation(t *testing.T) {
 	shEvent, err := svc.Create(ctx, model.EventInput{
 		Title:    set("shanghai"),
 		IsAllDay: set(true),
-		StartAt:  set(instant),
+		StartAt:  secs(instant),
 	}, shanghai)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -236,7 +245,7 @@ func TestCompletionRequiresTask(t *testing.T) {
 
 	ev, err := svc.Create(context.Background(), model.EventInput{
 		Title:       set("not a task"),
-		StartAt:     set(int64(1_000)),
+		StartAt:     secs(int64(1_000)),
 		IsCompleted: set(true),
 	}, nil)
 	if err != nil {
@@ -252,7 +261,7 @@ func TestTimedEventClearsEventDate(t *testing.T) {
 
 	ev, err := svc.Create(context.Background(), model.EventInput{
 		Title:     set("timed"),
-		StartAt:   set(int64(1_000)),
+		StartAt:   secs(int64(1_000)),
 		EventDate: null[string](),
 	}, nil)
 	if err != nil {
@@ -271,8 +280,8 @@ func TestUpdatePatchSemantics(t *testing.T) {
 
 	created, err := svc.Create(ctx, model.EventInput{
 		Title:   set("Original"),
-		StartAt: set(int64(1773205200)),
-		EndAt:   set(int64(1773208800)),
+		StartAt: secs(1773205200),
+		EndAt:   secs(int64(1773208800)),
 		Notes:   set("keep me"),
 		IsTask:  set(true),
 	}, nil)
@@ -340,7 +349,7 @@ func TestUpdatePatchSemantics(t *testing.T) {
 	t.Run("clearing the date converts back to timed", func(t *testing.T) {
 		got, err := svc.Update(ctx, id, model.EventInput{
 			EventDate: null[string](),
-			StartAt:   set(int64(1773212400)),
+			StartAt:   secs(int64(1773212400)),
 		}, nil)
 		if err != nil {
 			t.Fatalf("Update: %v", err)
@@ -368,4 +377,78 @@ func TestDeleteReportsMissing(t *testing.T) {
 	if err := svc.Delete(context.Background(), 4242); !isNotFound(err) {
 		t.Fatalf("Delete error = %v, want apperr.ErrNotFound", err)
 	}
+}
+
+// A client may send its own wall clock instead of a Unix timestamp; the value
+// must be resolved in the request timezone and stored as an absolute instant.
+func TestFlexibleTimeInput(t *testing.T) {
+	svc := newTestService(t, "Asia/Shanghai")
+	ctx := context.Background()
+	shanghai := svc.Location()
+
+	const want int64 = 1773205200 // 2026-03-11T13:00:00+08:00
+
+	ev, err := svc.Create(ctx, model.EventInput{
+		Title:   set("local wall clock"),
+		StartAt: at("2026-03-11T13:00:00"),
+		EndAt:   at("2026-03-11T14:30:00"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if ev.StartAt != want {
+		t.Errorf("start_at = %d, want %d", ev.StartAt, want)
+	}
+	if ev.EndAt == nil || *ev.EndAt != want+5400 {
+		t.Errorf("end_at = %v, want %d", ev.EndAt, want+5400)
+	}
+	// The stored value is an absolute instant, so it renders back identically
+	// in the same zone.
+	if got := time.Unix(ev.StartAt, 0).In(shanghai).Format(time.RFC3339); got != "2026-03-11T13:00:00+08:00" {
+		t.Errorf("rendered back as %s", got)
+	}
+
+	t.Run("an RFC3339 offset wins over the request zone", func(t *testing.T) {
+		got, err := svc.Create(ctx, model.EventInput{
+			Title:   set("explicit offset"),
+			StartAt: at("2026-03-11T13:00:00+08:00"),
+		}, nil)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if got.StartAt != want {
+			t.Errorf("start_at = %d, want %d", got.StartAt, want)
+		}
+	})
+
+	t.Run("a different request zone yields a different instant", func(t *testing.T) {
+		utc, err := time.LoadLocation("UTC")
+		if err != nil {
+			t.Fatalf("LoadLocation: %v", err)
+		}
+		got, err := svc.Create(ctx, model.EventInput{
+			Title:   set("utc wall clock"),
+			StartAt: at("2026-03-11T13:00:00"),
+		}, utc)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if got.StartAt == want {
+			t.Error("the request timezone did not affect an offset-free value")
+		}
+		if got.StartAt != 1773234000 { // 2026-03-11T13:00:00Z
+			t.Errorf("start_at = %d, want 1773234000", got.StartAt)
+		}
+	})
+
+	t.Run("a string still has to be a real timestamp", func(t *testing.T) {
+		mustInvalid(t, svc, model.EventInput{Title: set("bad"), StartAt: at("not a time")}, "start_at")
+	})
+
+	t.Run("seconds still work and are range checked", func(t *testing.T) {
+		if _, err := svc.Create(ctx, model.EventInput{Title: set("secs"), StartAt: secs(want)}, nil); err != nil {
+			t.Fatalf("Create with seconds: %v", err)
+		}
+		mustInvalid(t, svc, model.EventInput{Title: set("huge"), StartAt: secs(maxTimestamp * 2)}, "start_at")
+	})
 }

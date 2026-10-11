@@ -172,18 +172,18 @@ func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Locatio
 
 	startSet, startVal := false, int64(0)
 	if in.StartAt.Set {
-		if in.StartAt.Value == nil {
+		if in.StartAt.IsNull() {
 			verr.Add("start_at", "must not be null")
-		} else {
-			startSet, startVal = true, *in.StartAt.Value
+		} else if v, ok := resolveFlexTime(verr, "start_at", in.StartAt, loc); ok {
+			startSet, startVal = true, v
 		}
 	}
 	endSet, endVal := false, int64(0)
 	if in.EndAt.Set {
-		if in.EndAt.Value == nil {
+		if in.EndAt.IsNull() {
 			ev.EndAt = nil
-		} else {
-			endSet, endVal = true, *in.EndAt.Value
+		} else if v, ok := resolveFlexTime(verr, "end_at", in.EndAt, loc); ok {
+			endSet, endVal = true, v
 		}
 	}
 	dateSet := in.EventDate.Set && in.EventDate.Value != nil
@@ -275,6 +275,26 @@ func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Locatio
 		return model.Event{}, nil, false, verr
 	}
 	return ev, reminders, replaceReminders, nil
+}
+
+// resolveFlexTime turns a timestamp that may have arrived as seconds or as a
+// string into Unix seconds.
+//
+// A string without an offset is read in loc, so a client can send its own wall
+// clock; the value that reaches the database is always an absolute instant.
+func resolveFlexTime(verr *apperr.Validation, field string, in model.FlexTime, loc *time.Location) (int64, bool) {
+	if in.Number != nil {
+		return *in.Number, true
+	}
+	if in.Text != nil {
+		t, err := calendar.ParseInstant(*in.Text, loc)
+		if err != nil {
+			verr.Add(field, err.Error())
+			return 0, false
+		}
+		return t.Unix(), true
+	}
+	return 0, false
 }
 
 func validateTimestamp(verr *apperr.Validation, field string, ts int64) {

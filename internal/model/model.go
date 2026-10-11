@@ -72,6 +72,47 @@ type Reminder struct {
 	CreatedAt int64 `json:"created_at"`
 }
 
+// FlexTime is a timestamp input that accepts either Unix seconds or a
+// timestamp string.
+//
+// Strings are resolved against the request timezone, which is what lets a
+// client send "2026-03-11T13:00" meaning 13:00 where it is, while the stored
+// value stays an absolute UTC-based instant.
+type FlexTime struct {
+	Set bool
+	// Number is the value when given as Unix seconds.
+	Number *int64
+	// Text is the value when given as a string, resolved later against tz.
+	Text *string
+}
+
+// UnmarshalJSON accepts a number, a string, or null.
+func (f *FlexTime) UnmarshalJSON(data []byte) error {
+	f.Set = true
+	f.Number, f.Text = nil, nil
+
+	if string(data) == "null" {
+		return nil
+	}
+	if len(data) > 0 && data[0] == '"' {
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		f.Text = &text
+		return nil
+	}
+	var number int64
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	f.Number = &number
+	return nil
+}
+
+// IsNull reports an explicit JSON null.
+func (f FlexTime) IsNull() bool { return f.Set && f.Number == nil && f.Text == nil }
+
 // ReminderInput is the request shape for attaching a reminder.
 type ReminderInput struct {
 	RemindAt int64 `json:"remind_at"`
@@ -84,8 +125,8 @@ type ReminderInput struct {
 type EventInput struct {
 	Title       Optional[string]          `json:"title"`
 	Notes       Optional[string]          `json:"notes"`
-	StartAt     Optional[int64]           `json:"start_at"`
-	EndAt       Optional[int64]           `json:"end_at"`
+	StartAt     FlexTime                  `json:"start_at"`
+	EndAt       FlexTime                  `json:"end_at"`
 	IsAllDay    Optional[bool]            `json:"is_all_day"`
 	EventDate   Optional[string]          `json:"event_date"`
 	IsTask      Optional[bool]            `json:"is_task"`

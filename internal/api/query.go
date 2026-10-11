@@ -97,15 +97,17 @@ func (s *Server) resolveWindow(r *http.Request, loc *time.Location, ws calendar.
 	}
 }
 
-// parseInstant accepts either Unix seconds or an RFC3339 timestamp.
+// parseInstant reads a window bound, reporting problems against the parameter
+// that carried it.
+//
+// The accepted forms are shared with the request body: Unix seconds, RFC3339
+// with an offset, or a wall-clock value read in the request timezone.
 func parseInstant(param, raw string, loc *time.Location) (time.Time, error) {
-	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		return time.Unix(n, 0).In(loc), nil
+	t, err := calendar.ParseInstant(raw, loc)
+	if err != nil {
+		return time.Time{}, apperr.Param(param, err.Error())
 	}
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t.In(loc), nil
-	}
-	return time.Time{}, apperr.Param(param, "must be RFC3339 (2026-03-10T09:00:00+08:00) or Unix seconds")
+	return t, nil
 }
 
 // parseFilter reads the optional list filters and pagination.
