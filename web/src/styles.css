@@ -788,8 +788,8 @@ body {
 
 /* -------------------------------------------------------------- event chip */
 
-/* The chip is the size of the event's duration, so anything that does not fit
-   is clipped rather than allowed to push the block around. */
+/* The chip fills the block FullCalendar sized from the event's duration, so
+   anything that does not fit is clipped instead of pushing the layout around. */
 .mc-chip {
   display: flex;
   flex-direction: column;
@@ -808,6 +808,17 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Keep every line at its natural height. Without this the flex items shrink to
+   share the block, so a line that does not fit gets vertically squashed into an
+   unreadable slice; the block should instead clip whole lines off the bottom. */
+.mc-chip > * {
+  flex: 0 0 auto;
+}
+
+.mc-chip .fc-event-title {
+  font-weight: 500;
+}
+
 /* Location and notes: one line each, dimmer than the title so the title still
    reads first. */
 .mc-chip__line {
@@ -815,7 +826,7 @@ body {
   opacity: 0.85;
 }
 
-/* An all-day event is a single bar: location sits beside the title. */
+/* An all-day event is a single bar: title, then location beside it. */
 .mc-chip--bar {
   flex-direction: row;
   align-items: baseline;
@@ -828,4 +839,46 @@ body {
 
 .mc-chip--bar .mc-chip__line {
   flex: 1 1 auto;
+}
+
+/*
+ * Short blocks, where only one line fits.
+ *
+ * The height is measured against .fc-event-main rather than the chip: a
+ * container query cannot restyle its own container, only its descendants, and
+ * the main element is the one with a height resolved by FullCalendar's layout.
+ *
+ * One line has to carry both facts, so the markup -- title, then time -- is
+ * reversed and a comma inserted. The time keeps its full width and the title
+ * absorbs the clipping.
+ */
+.fc-timegrid-event .fc-event-main {
+  container-type: size;
+}
+
+@container (max-height: 30px) {
+  .mc-chip {
+    flex-direction: row-reverse;
+    align-items: baseline;
+    gap: 0;
+  }
+
+  .mc-chip .fc-event-title {
+    flex: 1 1 auto;
+    font-weight: 500;
+  }
+
+  .mc-chip .fc-event-time {
+    flex: 0 0 auto;
+  }
+
+  /* Visually between the time and the title, since the row is reversed. */
+  .mc-chip .fc-event-time::after {
+    content: ',';
+  }
+
+  /* No room for a second line, let alone a third. */
+  .mc-chip__line {
+    display: none;
+  }
 }

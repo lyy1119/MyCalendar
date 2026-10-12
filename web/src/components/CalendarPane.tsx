@@ -12,13 +12,19 @@ import { toCalendarEvent } from '../eventMapping'
 import { WEEKDAY_SHORT } from '../time'
 
 /**
- * What the chip shows beyond the title.
+ * The contents of an event block.
  *
- * A timed block has room to stack the location and then the notes; an all-day
- * bar is a single line, so its location goes inline and the notes are left out
- * rather than squeezed. Every line is truncated with an ellipsis by CSS: a chip
- * is sized by the event's duration, so text that would not fit must be clipped
- * rather than allowed to spill.
+ * Two arrangements, chosen by CSS from the height the block actually has, which
+ * FullCalendar derives from the event's duration:
+ *
+ *   room for two lines   title, then the time underneath, then location, notes
+ *   one line only        "13:00 - 14:00, title"
+ *
+ * The single-line form puts the time first and lets only the title be clipped:
+ * a truncated time is worse than useless, whereas a clipped title is still
+ * recognisable. Both arrangements come from the same markup -- title before
+ * time, and the row direction reversed when space is short -- so no text is
+ * rendered twice for screen readers or text selection to trip over.
  */
 function eventChip(arg: EventContentArg) {
   const { location, notes } = arg.event.extendedProps as {
@@ -26,19 +32,23 @@ function eventChip(arg: EventContentArg) {
     notes?: string | null
   }
 
+  const title = arg.event.title
+  const time = arg.timeText
+
+  // An all-day bar is a single line of its own: title, then location beside it.
   if (arg.event.allDay) {
     return (
       <div className="mc-chip mc-chip--bar">
-        <span className="fc-event-title">{arg.event.title}</span>
-        {location ? <span className="mc-chip__line">{location}</span> : null}
+        <div className="fc-event-title">{title}</div>
+        {location ? <div className="mc-chip__line">{location}</div> : null}
       </div>
     )
   }
 
   return (
     <div className="mc-chip">
-      {arg.timeText ? <div className="fc-event-time">{arg.timeText}</div> : null}
-      <div className="fc-event-title">{arg.event.title}</div>
+      <div className="fc-event-title">{title}</div>
+      {time ? <div className="fc-event-time">{time}</div> : null}
       {location ? <div className="mc-chip__line">{location}</div> : null}
       {notes ? <div className="mc-chip__line">{notes}</div> : null}
     </div>

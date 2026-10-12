@@ -442,13 +442,24 @@ try {
       }, title)
 
     const today2 = await page.evaluate(() => document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date'))
-    const at2 = (n) => page.evaluate((d) => Math.floor(new Date(d).getTime() / 1000), `${today2}T${String(n).padStart(2, '0')}:00:00`)
+    const at2 = (n) =>
+      page.evaluate((d) => Math.floor(new Date(d).getTime() / 1000), `${today2}T${String(Math.floor(n)).padStart(2, '0')}:${n % 1 ? '30' : '00'}:00`)
     const longText = '某某国际中心 A 座 18 层 1808 会议室（出电梯右手边走到头再左转，靠窗那一侧的那一间）'
 
     await api(`/api/v1/events?tz=${encodeURIComponent(TZ)}`, {
       method: 'POST',
       body: JSON.stringify({ title: '细节探针', start_at: await at2(9), end_at: await at2(12), location: longText, notes: '记得带笔记本，以及充电器、转接头、纸质材料和上次会议的纪要，进门先找行政拿访客卡' }),
     })
+
+    // A half-hour block at 48px per hour has room for a single line, which is
+    // the case where the time has to share the row with the title. Seeded before
+    // the reload: creating it afterwards leaves it in the database but not in the
+    // already-rendered grid.
+    await api(`/api/v1/events?tz=${encodeURIComponent(TZ)}`, {
+      method: 'POST',
+      body: JSON.stringify({ title: '短块探针', start_at: await at2(14), end_at: await at2(14.5), location: '三楼会议室', notes: '记得带笔记本' }),
+    })
+
     await page.reload({ waitUntil: 'networkidle' })
     await page.waitForSelector('.mc-calendar .fc-timegrid-event', { timeout: 15000 })
     await page.waitForTimeout(700)
@@ -462,6 +473,46 @@ try {
       chip?.lines.every((l) => l.nowrap && l.ellipsis) === true && chip?.lines.every((l) => l.truncated) === true,
       JSON.stringify(chip?.lines.map((l) => [l.nowrap, l.ellipsis, l.truncated])),
     )
+    // Title above time, the other way round from FullCalendar's default.
+    const order = await page.evaluate(() => {
+      const root = document.querySelector('.mc-calendar')
+      const ev = [...root.querySelectorAll('.fc-timegrid-event')].find((e) => e.textContent.includes('细节探针'))
+      const title = ev?.querySelector('.fc-event-title')?.getBoundingClientRect()
+      const time = ev?.querySelector('.fc-event-time')?.getBoundingClientRect()
+      return title && time ? { titleY: title.y, timeY: time.y, titleH: title.height, timeH: time.height } : null
+    })
+    check('the title comes first, the time underneath', (order?.titleY ?? 0) < (order?.timeY ?? 0), `titleY=${Math.round(order?.titleY ?? -1)} timeY=${Math.round(order?.timeY ?? -1)}`)
+    check(
+      'lines keep their natural height rather than being squashed',
+      (order?.titleH ?? 0) >= 12 && (order?.timeH ?? 0) >= 12,
+      `titleH=${Math.round(order?.titleH ?? -1)} timeH=${Math.round(order?.timeH ?? -1)}`,
+    )
+
+    // A block with room for only one line puts the time and title together.
+    const shortBlock = await page.evaluate(() => {
+      const root = document.querySelector('.mc-calendar')
+      const ev = [...root.querySelectorAll('.fc-timegrid-event')].find((e) => e.textContent.includes('短块探针'))
+      if (!ev) return null
+      const rect = (el) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y } }
+      const title = ev.querySelector('.fc-event-title')
+      const time = ev.querySelector('.fc-event-time')
+      return {
+        blockH: Math.round(ev.getBoundingClientRect().height),
+        time: rect(time),
+        title: rect(title),
+        comma: getComputedStyle(time, '::after').content,
+        timeClipped: time.scrollWidth > time.clientWidth + 1,
+        titleClipped: title.scrollWidth > title.clientWidth + 1,
+        extras: [...ev.querySelectorAll('.mc-chip__line')].filter((e) => getComputedStyle(e).display !== 'none').length,
+      }
+    })
+    check('a short block fits on one line', shortBlock !== null && shortBlock.blockH <= 26, `blockH=${shortBlock?.blockH}`)
+    check('its time and title share that line', Math.abs((shortBlock?.time.y ?? 0) - (shortBlock?.title.y ?? 99)) < 8)
+    check('its time is written before the title', (shortBlock?.time.x ?? 99) < (shortBlock?.title.x ?? 0), `timeX=${Math.round(shortBlock?.time.x ?? -1)} titleX=${Math.round(shortBlock?.title.x ?? -1)}`)
+    check('they are separated by a comma', shortBlock?.comma === '","', String(shortBlock?.comma))
+    check('the time is still shown in full', shortBlock?.timeClipped === false)
+    check('location and notes are dropped when there is no room', shortBlock?.extras === 0, `visible=${shortBlock?.extras}`)
+
     check(
       'the chip does not spill out of its block',
       await page.evaluate(() => {
