@@ -419,6 +419,62 @@ try {
   const labelToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check('today returns to the current window', labelToday === labelBefore, `${labelToday} vs ${labelBefore}`)
 
+  // ------------------------------------------------------------ event chip
+
+  {
+    const chipLine = (title) =>
+      page.evaluate((t) => {
+        const root = document.querySelector('.mc-calendar')
+        const ev = [...root.querySelectorAll('.fc-timegrid-event, .fc-daygrid-event')].find((e) => e.textContent.includes(t))
+        if (!ev) return null
+        return {
+          title: ev.querySelector('.fc-event-title')?.textContent,
+          lines: [...ev.querySelectorAll('.mc-chip__line')].map((el) => {
+            const style = getComputedStyle(el)
+            return {
+              text: el.textContent,
+              nowrap: style.whiteSpace === 'nowrap',
+              ellipsis: style.textOverflow === 'ellipsis',
+              truncated: el.scrollWidth > el.clientWidth,
+            }
+          }),
+        }
+      }, title)
+
+    const today2 = await page.evaluate(() => document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date'))
+    const at2 = (n) => page.evaluate((d) => Math.floor(new Date(d).getTime() / 1000), `${today2}T${String(n).padStart(2, '0')}:00:00`)
+    const longText = '某某国际中心 A 座 18 层 1808 会议室（出电梯右手边走到头再左转，靠窗那一侧的那一间）'
+
+    await api(`/api/v1/events?tz=${encodeURIComponent(TZ)}`, {
+      method: 'POST',
+      body: JSON.stringify({ title: '细节探针', start_at: await at2(9), end_at: await at2(12), location: longText, notes: '记得带笔记本，以及充电器、转接头、纸质材料和上次会议的纪要，进门先找行政拿访客卡' }),
+    })
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForSelector('.mc-calendar .fc-timegrid-event', { timeout: 15000 })
+    await page.waitForTimeout(700)
+
+    const chip = await chipLine('细节探针')
+    check('the chip shows the location', chip?.lines.some((l) => l.text.startsWith('某某国际中心')) === true, JSON.stringify(chip?.lines.map((l) => l.text.slice(0, 8))))
+    check('the chip shows the notes on their own line', chip?.lines.some((l) => l.text.startsWith('记得带笔记本')) === true)
+    check('the title still reads first', chip?.title === '细节探针', chip?.title)
+    check(
+      'both extra lines are single-line and ellipsis-truncated',
+      chip?.lines.every((l) => l.nowrap && l.ellipsis) === true && chip?.lines.every((l) => l.truncated) === true,
+      JSON.stringify(chip?.lines.map((l) => [l.nowrap, l.ellipsis, l.truncated])),
+    )
+    check(
+      'the chip does not spill out of its block',
+      await page.evaluate(() => {
+        const root = document.querySelector('.mc-calendar')
+        return [...root.querySelectorAll('.fc-timegrid-event')].every((ev) => {
+          const inner = ev.querySelector('.mc-chip')
+          if (!inner) return true
+          return inner.getBoundingClientRect().height <= ev.getBoundingClientRect().height + 1
+        })
+      }),
+    )
+  }
+
   // ------------------------------------------------------------ appearance
 
   {

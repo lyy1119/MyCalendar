@@ -85,6 +85,10 @@ export function toCalendarEvent(event: ApiEvent): FullCalendarEventInput {
   if (event.is_task) classNames.push('mc-task')
   if (event.is_completed) classNames.push('mc-done')
 
+  // The chip renderer needs these, and they are not part of FullCalendar's
+  // event shape.
+  const extendedProps = { location: event.location, notes: event.notes }
+
   if (event.is_all_day && event.event_date) {
     return {
       id: String(event.id),
@@ -93,6 +97,7 @@ export function toCalendarEvent(event: ApiEvent): FullCalendarEventInput {
       start: event.event_date,
       allDay: true,
       classNames,
+      extendedProps,
     }
   }
 
@@ -109,6 +114,7 @@ export function toCalendarEvent(event: ApiEvent): FullCalendarEventInput {
     end,
     allDay: false,
     classNames,
+    extendedProps,
   }
 }
 

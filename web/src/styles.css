@@ -785,3 +785,47 @@ body {
   bottom: 76px;
   border-color: var(--mc-accent);
 }
+
+/* -------------------------------------------------------------- event chip */
+
+/* The chip is the size of the event's duration, so anything that does not fit
+   is clipped rather than allowed to push the block around. */
+.mc-chip {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  line-height: 1.25;
+}
+
+.mc-chip .fc-event-title,
+.mc-chip .fc-event-time,
+.mc-chip__line {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Location and notes: one line each, dimmer than the title so the title still
+   reads first. */
+.mc-chip__line {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+/* An all-day event is a single bar: location sits beside the title. */
+.mc-chip--bar {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.mc-chip--bar .fc-event-title {
+  flex: 0 1 auto;
+}
+
+.mc-chip--bar .mc-chip__line {
+  flex: 1 1 auto;
+}

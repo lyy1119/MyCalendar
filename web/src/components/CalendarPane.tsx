@@ -1,6 +1,6 @@
 import type { RefObject } from 'react'
 import FullCalendar from '@fullcalendar/react'
-import type { DateSelectArg, DatesSetArg, EventClickArg } from '@fullcalendar/core'
+import type { DateSelectArg, DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import dayGridPlugin from '@fullcalendar/daygrid'
@@ -10,6 +10,40 @@ import zhCn from '@fullcalendar/core/locales/zh-cn'
 import type { ApiEvent } from '../api'
 import { toCalendarEvent } from '../eventMapping'
 import { WEEKDAY_SHORT } from '../time'
+
+/**
+ * What the chip shows beyond the title.
+ *
+ * A timed block has room to stack the location and then the notes; an all-day
+ * bar is a single line, so its location goes inline and the notes are left out
+ * rather than squeezed. Every line is truncated with an ellipsis by CSS: a chip
+ * is sized by the event's duration, so text that would not fit must be clipped
+ * rather than allowed to spill.
+ */
+function eventChip(arg: EventContentArg) {
+  const { location, notes } = arg.event.extendedProps as {
+    location?: string | null
+    notes?: string | null
+  }
+
+  if (arg.event.allDay) {
+    return (
+      <div className="mc-chip mc-chip--bar">
+        <span className="fc-event-title">{arg.event.title}</span>
+        {location ? <span className="mc-chip__line">{location}</span> : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="mc-chip">
+      {arg.timeText ? <div className="fc-event-time">{arg.timeText}</div> : null}
+      <div className="fc-event-title">{arg.event.title}</div>
+      {location ? <div className="mc-chip__line">{location}</div> : null}
+      {notes ? <div className="mc-chip__line">{notes}</div> : null}
+    </div>
+  )
+}
 
 interface Props {
   events: ApiEvent[]
@@ -84,6 +118,7 @@ export function CalendarPane({
       selectMirror
       editable={false}
       events={events.map(toCalendarEvent)}
+      eventContent={eventChip}
       datesSet={onDatesSet}
       eventClick={onEventClick}
       select={onSelect}
