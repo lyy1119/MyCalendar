@@ -1,0 +1,185 @@
+name: Release
+
+# Every push to main publishes a release: a git tag, a GitHub release and a
+# container image on ghcr.io. The patch number increments itself, computed from
+# the tags that already exist, so nobody edits a version file by hand.
+#
+# Put [skip release] in a commit message to publish nothing for that push -- the
+# tests still run, only the release is skipped.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to increment
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+
+permissions:
+  contents: write # push the tag, create the release
+  packages: write # push the image to ghcr.io
+
+# Two runs computing a version at the same time would pick the same number, so
+# releases queue rather than overlap. Queued, not cancelled: every push deserves
+# its release.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # nothing here needs more than that
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Type checks and bundles, which is also what the image build will do.
+      - name: Build the frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+  version:
+    name: Next version
+    runs-on: ubuntu-latest
+    needs: test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      !contains(github.event.head_commit.message, '[skip release]')
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      tag: ${{ steps.next.outputs.tag }}
+      image: ${{ steps.next.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags live in history, and a shallow clone has none: the version
+          # would then look like a first release on every run.
+          fetch-depth: 0
+
+      - name: Compute the next version
+        id: next
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          set -euo pipefail
+          version="$(.github/scripts/next-version.sh "$BUMP")"
+          # ghcr.io refuses uppercase in an image name, and this repository is
+          # MyCalendar, so lower-case the whole path.
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "image=$image"
+          } >> "$GITHUB_OUTPUT"
+          echo "Publishing $version as $image:$version"
+
+  publish:
+    name: Publish image and release
+    runs-on: ubuntu-latest
+    needs: version
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ needs.version.outputs.image }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=raw,value=latest
+            type=sha,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Only amd64 is built. Add linux/arm64 to this list to cover a
+          # Raspberry Pi or an arm NAS; it works, it just doubles the build time
+          # because the Go compile then runs under emulation.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+          IMAGE: ${{ needs.version.outputs.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Re-running the workflow must not fail on work already done.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists, leaving it alone"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+          # The previous release, with this tag itself excluded, so the notes
+          # list what changed rather than everything that ever happened.
+          previous="$(git tag --list 'v[0-9]*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -v "^${TAG}$" \
+            | head -n 1 || true)"
+
+          {
+            echo "容器镜像：\`${IMAGE}:${VERSION}\`"
+            echo
+            echo '```bash'
+            echo "docker pull ${IMAGE}:${VERSION}"
+            echo '```'
+            echo
+            if [ -n "$previous" ]; then
+              echo "自 ${previous} 以来的改动："
+              echo
+              git log --no-merges --pretty='- %s (%h)' "${previous}..${TAG}"
+            else
+              echo "首个发布。"
+            fi
+          } > /tmp/notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, leaving it alone"
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file /tmp/notes.md
+          fi
