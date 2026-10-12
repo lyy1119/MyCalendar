@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, createEvent, deleteEvent, updateEvent } from '../api'
-import { draftToInput, toggleAllDay, type EventDraft } from '../eventMapping'
-import { BROWSER_TZ } from '../time'
+import {
+  REMINDER_OFFSETS,
+  draftStart,
+  draftToInput,
+  toggleAllDay,
+  type EventDraft,
+} from '../eventMapping'
+import { BROWSER_TZ, toDateTimeLocal } from '../time'
 
 interface Props {
   draft: EventDraft
@@ -23,6 +29,7 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
   const titleRef = useRef<HTMLInputElement>(null)
 
   const isNew = draft.id === null
+  const MAX_REMINDERS = 50
 
   // Focus the title so a keyboard-only flow works: click a slot, type, save.
   useEffect(() => {
@@ -40,6 +47,31 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
   }, [onClose, busy])
 
   const patch = (fields: Partial<EventDraft>) => setDraft((d) => ({ ...d, ...fields }))
+
+  const setReminder = (index: number, value: string) =>
+    setDraft((d) => ({ ...d, reminders: d.reminders.map((r, i) => (i === index ? value : r)) }))
+
+  const removeReminder = (index: number) =>
+    setDraft((d) => ({ ...d, reminders: d.reminders.filter((_, i) => i !== index) }))
+
+  const addReminder = () =>
+    setDraft((d) => (d.reminders.length >= MAX_REMINDERS ? d : { ...d, reminders: [...d.reminders, ''] }))
+
+  // Offsets are a convenience over an absolute remind_at: each one adds a
+  // reminder at the event's start minus that much.
+  const addOffset = (minutes: number) => {
+    const start = draftStart(draft)
+    if (!start) {
+      setError('请先填写有效的开始时间，再使用快捷提醒')
+      return
+    }
+    const at = toDateTimeLocal(new Date(start.getTime() - minutes * 60_000))
+    setDraft((d) =>
+      d.reminders.includes(at) || d.reminders.length >= MAX_REMINDERS
+        ? d
+        : { ...d, reminders: [...d.reminders, at] },
+    )
+  }
 
   const handleSave = async () => {
     const validation = draftToInput(draft)
@@ -167,6 +199,46 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
               onChange={(e) => patch({ notes: e.target.value })}
             />
           </label>
+
+          <div className="mc-field">
+            <span className="mc-field__label">提醒</span>
+            {draft.reminders.length === 0 && <p className="mc-hint">尚未设置提醒</p>}
+            {draft.reminders.map((value, index) => (
+              // Index keys are fine here: rows are positional and carry no identity.
+              <div className="mc-reminder" key={index}>
+                <input
+                  type="datetime-local"
+                  className="mc-input"
+                  aria-label={`第 ${index + 1} 个提醒时间`}
+                  value={value}
+                  onChange={(e) => setReminder(index, e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="mc-icon-btn"
+                  aria-label={`删除第 ${index + 1} 个提醒`}
+                  onClick={() => removeReminder(index)}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <div className="mc-reminder-actions">
+              <button type="button" className="mc-btn mc-btn--small" onClick={addReminder}>
+                ＋ 添加提醒
+              </button>
+              {REMINDER_OFFSETS.map((offset) => (
+                <button
+                  key={offset.minutes}
+                  type="button"
+                  className="mc-chip"
+                  onClick={() => addOffset(offset.minutes)}
+                >
+                  {offset.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div className="mc-field mc-field--inline">
             <input

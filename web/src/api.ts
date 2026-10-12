@@ -47,6 +47,11 @@ export interface EventInput {
   event_date?: string | null
   is_task?: boolean
   is_completed?: boolean
+  /**
+   * Whole-set replacement of the event's reminders. Sending [] clears them;
+   * omitting the field leaves them untouched.
+   */
+  reminders?: { remind_at: number }[]
 }
 
 export interface ApiFieldError {

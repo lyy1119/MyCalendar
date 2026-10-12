@@ -113,9 +113,45 @@ func (f *FlexTime) UnmarshalJSON(data []byte) error {
 // IsNull reports an explicit JSON null.
 func (f FlexTime) IsNull() bool { return f.Set && f.Number == nil && f.Text == nil }
 
-// ReminderInput is the request shape for attaching a reminder.
+// ReminderInput is a reminder nested inside an event payload. The owning event
+// is implied by the request, so no event_id is accepted here.
 type ReminderInput struct {
-	RemindAt int64 `json:"remind_at"`
+	RemindAt FlexTime `json:"remind_at"`
+}
+
+// ReminderCreate is the body of POST /api/v1/reminders.
+type ReminderCreate struct {
+	EventID  Optional[int64] `json:"event_id"`
+	RemindAt FlexTime        `json:"remind_at"`
+}
+
+// ReminderPatch is the body of PATCH /api/v1/reminders/{id}.
+type ReminderPatch struct {
+	RemindAt FlexTime `json:"remind_at"`
+}
+
+// ReminderView decorates a Reminder with its timestamp rendered in the request
+// timezone.
+type ReminderView struct {
+	Reminder
+	RemindAtLocal string `json:"remind_at_local"`
+}
+
+// NewReminderView renders a reminder in loc.
+func NewReminderView(r Reminder, loc *time.Location) ReminderView {
+	return ReminderView{
+		Reminder:      r,
+		RemindAtLocal: time.Unix(r.RemindAt, 0).In(loc).Format(time.RFC3339),
+	}
+}
+
+// NewReminderViews renders a slice, always returning a non-nil slice.
+func NewReminderViews(reminders []Reminder, loc *time.Location) []ReminderView {
+	out := make([]ReminderView, 0, len(reminders))
+	for _, r := range reminders {
+		out = append(out, NewReminderView(r, loc))
+	}
+	return out
 }
 
 // EventInput is the request body for both POST (create) and PATCH (update).
@@ -142,6 +178,11 @@ type EventView struct {
 	Event
 	StartAtLocal string  `json:"start_at_local"`
 	EndAtLocal   *string `json:"end_at_local"`
+
+	// Reminders shadows the promoted Event.Reminders (a shallower field wins in
+	// encoding/json) so that a reminder nested in an event is rendered exactly
+	// like one returned by the reminder endpoints, with its own local time.
+	Reminders []ReminderView `json:"reminders"`
 }
 
 // EventFilter describes a range query against the events table.
@@ -172,9 +213,7 @@ func NewEventView(ev Event, loc *time.Location) EventView {
 		s := time.Unix(*ev.EndAt, 0).In(loc).Format(time.RFC3339)
 		v.EndAtLocal = &s
 	}
-	if v.Reminders == nil {
-		v.Reminders = []Reminder{}
-	}
+	v.Reminders = NewReminderViews(ev.Reminders, loc)
 	return v
 }
 

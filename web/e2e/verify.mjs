@@ -324,6 +324,67 @@ try {
     JSON.stringify((allDayList.body?.events ?? []).map((e) => [e.title, e.is_all_day])),
   )
 
+  // ------------------------------------------------------------- reminders
+
+  {
+    const firstDay = await page.evaluate(() => document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date'))
+
+    // Add two reminders by hand and one with a quick offset, then save.
+    await page.locator('.mc-new-btn').click()
+    await page.waitForSelector('.mc-dialog', { timeout: 5000 })
+    await page.locator('.mc-dialog input').first().fill('提醒探针')
+    await page.locator('.mc-dialog input[type="datetime-local"]').first().fill(`${firstDay}T14:00`)
+    await page.locator('.mc-dialog input[type="datetime-local"]').nth(1).fill(`${firstDay}T15:00`)
+
+    await page.getByRole('button', { name: '＋ 添加提醒' }).click()
+    await page.locator('.mc-dialog input[aria-label^="第 1 个提醒时间"]').fill(`${firstDay}T13:45`)
+    await page.getByRole('button', { name: '＋ 添加提醒' }).click()
+    await page.locator('.mc-dialog input[aria-label^="第 2 个提醒时间"]').fill(`${firstDay}T13:00`)
+    await page.getByRole('button', { name: '提前 30 分钟' }).click()
+    const rowsAfterAdd = await page.locator('.mc-dialog input[aria-label^="第"][aria-label$="个提醒时间"]').count()
+    check('reminder rows can be added, including a quick offset', rowsAfterAdd === 3, `rows=${rowsAfterAdd}`)
+
+    // Remove the middle one again.
+    await page.locator('.mc-dialog button[aria-label="删除第 2 个提醒"]').click()
+    const rowsAfterRemove = await page.locator('.mc-dialog input[aria-label^="第"][aria-label$="个提醒时间"]').count()
+    check('a reminder row can be removed', rowsAfterRemove === 2, `rows=${rowsAfterRemove}`)
+
+    await page.locator('.mc-dialog button[type="submit"]').click()
+    await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
+    await page.waitForTimeout(800)
+
+    const probe = (await api(`/api/v1/events?range=day&date=${firstDay}&tz=${encodeURIComponent(TZ)}`)).body?.events?.find((e) => e.title === '提醒探针')
+    const times = (probe?.reminders ?? []).map((r) => r.remind_at_local)
+    check(
+      'the reminders were saved as absolute instants',
+      times.length === 2 && times.includes(`${firstDay}T13:45:00+08:00`) && times.includes(`${firstDay}T13:30:00+08:00`),
+      JSON.stringify(times),
+    )
+
+    // The standalone endpoints see exactly the same rows.
+    const listed = await api(`/api/v1/reminders?event_id=${probe?.id}&tz=${encodeURIComponent(TZ)}`)
+    check(
+      'the standalone reminder API sees the same rows',
+      listed.body?.count === 2,
+      `count=${listed.body?.count}`,
+    )
+
+    // Reopen and confirm the times come back, then clear them all.
+    await page.locator('.mc-calendar .fc-timegrid-event', { hasText: '提醒探针' }).first().click({ position: { x: 24, y: 10 } })
+    await page.waitForSelector('.mc-dialog', { timeout: 5000 })
+    const reopened = await page.locator('.mc-dialog input[aria-label^="第"][aria-label$="个提醒时间"]').count()
+    check('reopening the event shows its reminders', reopened === 2, `rows=${reopened}`)
+
+    await page.locator('.mc-dialog button[aria-label="删除第 1 个提醒"]').click()
+    await page.locator('.mc-dialog button[aria-label="删除第 1 个提醒"]').click()
+    await page.locator('.mc-dialog button[type="submit"]').click()
+    await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
+    await page.waitForTimeout(800)
+
+    const afterClear = await api(`/api/v1/reminders?event_id=${probe?.id}&tz=${encodeURIComponent(TZ)}`)
+    check('removing every reminder clears the set', afterClear.body?.count === 0, `count=${afterClear.body?.count}`)
+  }
+
   // ---------------------------------------------------------------- delete
 
   page.once('dialog', (d) => d.accept())

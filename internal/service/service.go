@@ -7,7 +7,6 @@
 package service
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -113,9 +112,10 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 }
 
 // build merges a request body onto cur (nil when creating) and normalises the
-// result. It returns the event to persist, the reminder set to apply, and
+// result. It returns the event to persist, the reminder times to apply as
+// Unix seconds, and
 // whether that reminder set should replace the stored one.
-func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Location) (model.Event, []model.ReminderInput, bool, error) {
+func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Location) (model.Event, []int64, bool, error) {
 	verr := &apperr.Validation{}
 	creating := cur == nil
 
@@ -251,7 +251,7 @@ func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Locatio
 	// ---- reminders -----------------------------------------------------
 
 	replaceReminders := in.Reminders.Set
-	var reminders []model.ReminderInput
+	var reminders []int64
 	if replaceReminders && in.Reminders.Value != nil {
 		list := *in.Reminders.Value
 		if len(list) > MaxReminders {
@@ -259,16 +259,25 @@ func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Locatio
 		}
 		seen := make(map[int64]bool, len(list))
 		for i, r := range list {
-			if seen[r.RemindAt] {
+			field := fmt.Sprintf("reminders[%d].remind_at", i)
+			if !r.RemindAt.Set || r.RemindAt.IsNull() {
+				verr.Add(field, "is required")
+				continue
+			}
+			// Each entry is resolved in the request timezone, exactly like a
+			// standalone reminder.
+			value, ok := resolveFlexTime(verr, field, r.RemindAt, loc)
+			if !ok {
+				continue
+			}
+			validateTimestamp(verr, field, value)
+			if seen[value] {
 				continue // duplicate reminder times collapse into one
 			}
-			seen[r.RemindAt] = true
-			validateTimestamp(verr, fmt.Sprintf("reminders[%d].remind_at", i), r.RemindAt)
-			reminders = append(reminders, r)
+			seen[value] = true
+			reminders = append(reminders, value)
 		}
-		slices.SortFunc(reminders, func(a, b model.ReminderInput) int {
-			return cmp.Compare(a.RemindAt, b.RemindAt)
-		})
+		slices.Sort(reminders)
 	}
 
 	if verr.Has() {

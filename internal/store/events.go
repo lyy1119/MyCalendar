@@ -31,7 +31,7 @@ type rowScanner interface {
 }
 
 // CreateEvent inserts an event and its reminders in one transaction.
-func (s *Store) CreateEvent(ctx context.Context, ev model.Event, reminders []model.ReminderInput) (model.Event, error) {
+func (s *Store) CreateEvent(ctx context.Context, ev model.Event, reminders []int64) (model.Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("begin create: %w", err)
@@ -97,7 +97,7 @@ func (s *Store) GetEvent(ctx context.Context, id int64) (model.Event, error) {
 //
 // When replaceReminders is true the existing reminder rows are replaced by the
 // supplied set; otherwise reminders are left untouched.
-func (s *Store) UpdateEvent(ctx context.Context, ev model.Event, reminders []model.ReminderInput, replaceReminders bool) (model.Event, error) {
+func (s *Store) UpdateEvent(ctx context.Context, ev model.Event, reminders []int64, replaceReminders bool) (model.Event, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("begin update: %w", err)
@@ -254,11 +254,14 @@ func (s *Store) ListEvents(ctx context.Context, f model.EventFilter) ([]model.Ev
 }
 
 // insertReminders writes reminder rows for one event.
-func insertReminders(ctx context.Context, tx *sql.Tx, eventID int64, reminders []model.ReminderInput, now int64) error {
-	for _, r := range reminders {
+//
+// Times arrive as Unix seconds: the service resolves any timezone-dependent
+// input before it reaches the database.
+func insertReminders(ctx context.Context, tx *sql.Tx, eventID int64, remindAt []int64, now int64) error {
+	for _, at := range remindAt {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO reminders (event_id, remind_at, created_at) VALUES (?, ?, ?)`,
-			eventID, r.RemindAt, now); err != nil {
+			eventID, at, now); err != nil {
 			return fmt.Errorf("insert reminder: %w", err)
 		}
 	}

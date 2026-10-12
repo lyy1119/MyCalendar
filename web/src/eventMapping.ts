@@ -32,6 +32,9 @@ const OPEN_ENDED_MINUTES = 15
 /** Default length of a newly created timed event. */
 const DEFAULT_NEW_MINUTES = 60
 
+/** Matches the server's per-event limit. */
+const MAX_REMINDERS = 50
+
 export interface EventDraft {
   /** null while creating. */
   id: number | null
@@ -46,6 +49,32 @@ export interface EventDraft {
   end: string
   isTask: boolean
   isCompleted: boolean
+  /**
+   * Reminder times as `datetime-local` strings, in the order they are shown.
+   *
+   * The API stores absolute instants, so the strings are converted on save;
+   * they stay strings here because that is what the native input works with.
+   */
+  reminders: string[]
+}
+
+/** Convenience offsets offered next to the reminder field. */
+export const REMINDER_OFFSETS: { label: string; minutes: number }[] = [
+  { label: '提前 5 分钟', minutes: 5 },
+  { label: '提前 10 分钟', minutes: 10 },
+  { label: '提前 30 分钟', minutes: 30 },
+  { label: '提前 1 小时', minutes: 60 },
+  { label: '提前 1 天', minutes: 1440 },
+]
+
+/**
+ * The instant a reminder offset is measured from: the event's own start.
+ *
+ * For an all-day event that is local midnight of its date, which is the only
+ * anchor the schema gives it.
+ */
+export function draftStart(draft: EventDraft): Date | null {
+  return draft.isAllDay ? parseDateOnly(draft.eventDate) : parseDateTimeLocal(draft.start)
 }
 
 /** Build a FullCalendar event from an API event. */
@@ -94,6 +123,7 @@ export function draftFromEvent(event: ApiEvent): EventDraft {
     end: event.end_at !== null ? toDateTimeLocal(fromUnixSeconds(event.end_at)) : '',
     isTask: event.is_task,
     isCompleted: event.is_completed,
+    reminders: (event.reminders ?? []).map((r) => toDateTimeLocal(fromUnixSeconds(r.remind_at))),
   }
 }
 
@@ -110,6 +140,7 @@ export function draftForRange(start: Date, end: Date | null, allDay: boolean): E
     end: toDateTimeLocal(effectiveEnd),
     isTask: false,
     isCompleted: false,
+    reminders: [],
   }
 }
 
@@ -153,8 +184,27 @@ export function draftToInput(draft: EventDraft): DraftValidation {
   if (title === '') return { ok: false, message: '标题不能为空' }
   if (title.length > 500) return { ok: false, message: '标题最多 500 个字符' }
 
+  // Reminder times are validated together so a single bad row does not silently
+  // disappear from the set that gets written.
+  const reminderTimes: number[] = []
+  for (let i = 0; i < draft.reminders.length; i++) {
+    const raw = draft.reminders[i].trim()
+    if (raw === '') continue
+    const parsed = parseDateTimeLocal(raw)
+    if (!parsed) return { ok: false, message: `第 ${i + 1} 个提醒时间格式不正确` }
+    const seconds = toUnixSeconds(parsed)
+    if (!reminderTimes.includes(seconds)) reminderTimes.push(seconds)
+  }
+  if (reminderTimes.length > MAX_REMINDERS) {
+    return { ok: false, message: `最多只能设置 ${MAX_REMINDERS} 个提醒` }
+  }
+  // Sending the field always, even empty, is what makes removing the last
+  // reminder actually clear it: the API treats reminders as a whole set.
+  const reminders = reminderTimes.map((remind_at) => ({ remind_at }))
+
   const notes = draft.notes.trim()
   const base: EventInput = {
+    reminders,
     title,
     // An empty notes box means "no notes", stored as NULL.
     notes: notes === '' ? null : notes,

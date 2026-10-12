@@ -120,7 +120,7 @@ func TestReminderLimitsAndNormalisation(t *testing.T) {
 
 	tooMany := make([]model.ReminderInput, 0, MaxReminders+1)
 	for i := 0; i <= MaxReminders; i++ {
-		tooMany = append(tooMany, model.ReminderInput{RemindAt: int64(1_000 + i)})
+		tooMany = append(tooMany, model.ReminderInput{RemindAt: secs(int64(1_000 + i))})
 	}
 	mustInvalid(t, svc, model.EventInput{
 		Title:     set("too many"),
@@ -132,10 +132,10 @@ func TestReminderLimitsAndNormalisation(t *testing.T) {
 		Title:   set("dedupe"),
 		StartAt: secs(1),
 		Reminders: set([]model.ReminderInput{
-			{RemindAt: 300},
-			{RemindAt: 100},
-			{RemindAt: 300},
-			{RemindAt: 200},
+			{RemindAt: secs(300)},
+			{RemindAt: secs(100)},
+			{RemindAt: secs(300)},
+			{RemindAt: secs(200)},
 		}),
 	}, nil)
 	if err != nil {

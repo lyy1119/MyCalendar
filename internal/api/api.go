@@ -86,6 +86,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
+	// Reminder collection.
+	mux.HandleFunc("GET /api/v1/reminders", s.handleListReminders)
+	mux.HandleFunc("POST /api/v1/reminders", s.handleCreateReminder)
+	mux.HandleFunc("/api/v1/reminders", s.methodNotAllowed("GET, POST"))
+
+	// Single reminder.
+	mux.HandleFunc("GET /api/v1/reminders/{id}", s.handleGetReminder)
+	mux.HandleFunc("PATCH /api/v1/reminders/{id}", s.handlePatchReminder)
+	mux.HandleFunc("DELETE /api/v1/reminders/{id}", s.handleDeleteReminder)
+	mux.HandleFunc("/api/v1/reminders/{id}", s.methodNotAllowed("GET, PATCH, DELETE"))
+
 	// Event collection.
 	mux.HandleFunc("GET /api/v1/events", s.handleListEvents)
 	mux.HandleFunc("POST /api/v1/events", s.handleCreateEvent)
@@ -248,6 +259,7 @@ func classify(err error) (int, errorBody) {
 	var (
 		validation *apperr.Validation
 		badParam   *apperr.BadParam
+		conflict   *apperr.Conflict
 		unmarshal  *json.UnmarshalTypeError
 		syntax     *json.SyntaxError
 		maxBytes   *http.MaxBytesError
@@ -290,10 +302,15 @@ func classify(err error) (int, errorBody) {
 			Code:    "body_too_large",
 			Message: "request body must be at most 1 MiB",
 		}
+	case errors.As(err, &conflict):
+		return http.StatusConflict, errorBody{
+			Code:    conflict.Code,
+			Message: conflict.Message,
+		}
 	case errors.Is(err, apperr.ErrNotFound):
 		return http.StatusNotFound, errorBody{
 			Code:    "not_found",
-			Message: "the requested event does not exist",
+			Message: "the requested record does not exist",
 		}
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// The client went away; the status is never seen, but keep it coherent.
@@ -398,10 +415,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // parseID extracts the {id} path segment.
 func parseID(r *http.Request) (int64, error) {
-	raw := r.PathValue("id")
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || id <= 0 {
-		return 0, apperr.Param("id", "must be a positive integer")
-	}
-	return id, nil
+	return parsePositiveInt("id", r.PathValue("id"))
 }
+
+// parsePositiveInt reads a positive integer from a path or query value.
+func parsePositiveInt(param, raw string) (int64, error) {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || value <= 0 {
+		return 0, apperr.Param(param, "must be a positive integer")
+	}
+	return value, nil
+}
+
+// formatID renders an identifier for a Location header.
+func formatID(id int64) string { return strconv.FormatInt(id, 10) }

@@ -234,7 +234,7 @@ func TestCreateGetUpdateDelete(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 
-	created, err := st.CreateEvent(ctx, mkTimed("Standup", 1_000, 2_000), []model.ReminderInput{{RemindAt: 900}})
+	created, err := st.CreateEvent(ctx, mkTimed("Standup", 1_000, 2_000), []int64{900})
 	if err != nil {
 		t.Fatalf("CreateEvent: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestDeleteCascadesToReminders(t *testing.T) {
 	st := newTestStore(t)
 
 	ev, err := st.CreateEvent(ctx, mkTimed("With reminders", 1_000, 2_000),
-		[]model.ReminderInput{{RemindAt: 500}, {RemindAt: 900}})
+		[]int64{500, 900})
 	if err != nil {
 		t.Fatalf("CreateEvent: %v", err)
 	}
@@ -316,12 +316,12 @@ func TestReplaceReminders(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 
-	ev, err := st.CreateEvent(ctx, mkTimed("Task", 1_000, 2_000), []model.ReminderInput{{RemindAt: 500}})
+	ev, err := st.CreateEvent(ctx, mkTimed("Task", 1_000, 2_000), []int64{500})
 	if err != nil {
 		t.Fatalf("CreateEvent: %v", err)
 	}
 
-	replaced, err := st.UpdateEvent(ctx, ev, []model.ReminderInput{{RemindAt: 100}, {RemindAt: 200}}, true)
+	replaced, err := st.UpdateEvent(ctx, ev, []int64{100, 200}, true)
 	if err != nil {
 		t.Fatalf("UpdateEvent: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestConcurrentCreates(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			ev := mkTimed("concurrent", int64(1_000+i), int64(2_000+i))
-			if _, err := st.CreateEvent(ctx, ev, []model.ReminderInput{{RemindAt: int64(500 + i)}}); err != nil {
+			if _, err := st.CreateEvent(ctx, ev, []int64{int64(500 + i)}); err != nil {
 				errs <- err
 			}
 		}(i)
@@ -645,4 +645,135 @@ func TestListEventsEmptyResultIsNil(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("expected no events, got %v", titles(events))
 	}
+}
+
+func TestReminderCRUDAndFilters(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	ev, err := st.CreateEvent(ctx, mkTimed("with reminders", 1_000_000, 2_000_000), nil)
+	if err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+	other, err := st.CreateEvent(ctx, mkTimed("other", 1_000_000, 2_000_000), nil)
+	if err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+
+	var ids []int64
+	for _, at := range []int64{300, 100, 200} {
+		r, err := st.CreateReminder(ctx, ev.ID, at, 1_700_000_000)
+		if err != nil {
+			t.Fatalf("CreateReminder: %v", err)
+		}
+		ids = append(ids, r.ID)
+	}
+	if _, err := st.CreateReminder(ctx, other.ID, 400, 1_700_000_000); err != nil {
+		t.Fatalf("CreateReminder: %v", err)
+	}
+
+	t.Run("lists ordered by time", func(t *testing.T) {
+		got, err := st.ListReminders(ctx, ReminderFilter{})
+		if err != nil {
+			t.Fatalf("ListReminders: %v", err)
+		}
+		want := []int64{100, 200, 300, 400}
+		if len(got) != len(want) {
+			t.Fatalf("got %d reminders, want %d", len(got), len(want))
+		}
+		for i, at := range want {
+			if got[i].RemindAt != at {
+				t.Errorf("reminder[%d] = %d, want %d", i, got[i].RemindAt, at)
+			}
+		}
+	})
+
+	t.Run("filters by event", func(t *testing.T) {
+		got, err := st.ListReminders(ctx, ReminderFilter{EventID: &ev.ID})
+		if err != nil {
+			t.Fatalf("ListReminders: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("got %d reminders for the event, want 3", len(got))
+		}
+	})
+
+	t.Run("filters by time range", func(t *testing.T) {
+		from, to := int64(150), int64(350)
+		got, err := st.ListReminders(ctx, ReminderFilter{From: &from, To: &to})
+		if err != nil {
+			t.Fatalf("ListReminders: %v", err)
+		}
+		// Half-open: 200 and 300 are in, 100 and 400 are out.
+		if len(got) != 2 || got[0].RemindAt != 200 || got[1].RemindAt != 300 {
+			t.Fatalf("range filter returned %+v", got)
+		}
+	})
+
+	t.Run("paginates", func(t *testing.T) {
+		got, err := st.ListReminders(ctx, ReminderFilter{Limit: 2})
+		if err != nil {
+			t.Fatalf("ListReminders: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("limit 2 returned %d", len(got))
+		}
+		got, err = st.ListReminders(ctx, ReminderFilter{Limit: 2, Offset: 2})
+		if err != nil {
+			t.Fatalf("ListReminders: %v", err)
+		}
+		if len(got) != 2 || got[0].RemindAt != 300 {
+			t.Fatalf("offset 2 returned %+v", got)
+		}
+	})
+
+	t.Run("find by exact time", func(t *testing.T) {
+		found, err := st.FindReminderAt(ctx, ev.ID, 200)
+		if err != nil {
+			t.Fatalf("FindReminderAt: %v", err)
+		}
+		if found.RemindAt != 200 {
+			t.Errorf("found %d", found.RemindAt)
+		}
+		if _, err := st.FindReminderAt(ctx, ev.ID, 999); !errors.Is(err, apperr.ErrNotFound) {
+			t.Errorf("missing time returned %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("update and delete", func(t *testing.T) {
+		updated, err := st.UpdateReminder(ctx, ids[0], 555)
+		if err != nil {
+			t.Fatalf("UpdateReminder: %v", err)
+		}
+		if updated.RemindAt != 555 || updated.CreatedAt != 1_700_000_000 {
+			t.Errorf("update changed the wrong fields: %+v", updated)
+		}
+		if err := st.DeleteReminder(ctx, ids[0]); err != nil {
+			t.Fatalf("DeleteReminder: %v", err)
+		}
+		if err := st.DeleteReminder(ctx, ids[0]); !errors.Is(err, apperr.ErrNotFound) {
+			t.Errorf("second delete = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("counts per event", func(t *testing.T) {
+		count, err := st.CountRemindersForEvent(ctx, ev.ID)
+		if err != nil {
+			t.Fatalf("CountRemindersForEvent: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("count = %d, want 2", count)
+		}
+	})
+
+	t.Run("event existence", func(t *testing.T) {
+		found, err := st.EventExists(ctx, ev.ID)
+		if err != nil || !found {
+			t.Errorf("EventExists(existing) = %v, %v", found, err)
+		}
+		found, err = st.EventExists(ctx, 999_999)
+		if err != nil || found {
+			t.Errorf("EventExists(missing) = %v, %v", found, err)
+		}
+	})
 }

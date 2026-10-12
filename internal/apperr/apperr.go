@@ -49,6 +49,21 @@ func Invalid(field, message string) *Validation {
 	return &Validation{Details: []FieldError{{Field: field, Message: message}}}
 }
 
+// Conflict reports a request that is well formed but clashes with the stored
+// state, such as creating a second reminder at a time an event already uses.
+type Conflict struct {
+	Code    string
+	Message string
+}
+
+// Error implements the error interface.
+func (e *Conflict) Error() string { return e.Message }
+
+// Conflict reports a duplicate reminder or a similar clash.
+func NewConflict(code, message string) *Conflict {
+	return &Conflict{Code: code, Message: message}
+}
+
 // BadParam reports a malformed request parameter (path, query or body shape).
 type BadParam struct {
 	Param   string
