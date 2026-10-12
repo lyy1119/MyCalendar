@@ -19,9 +19,8 @@ services:
     # `always` to re-check the registry on every start, or `never` to stay
     # offline and rely on whatever is already local.
     #
-    # The package starts out private, so pulling needs a login once (or make the
-    # package public under Package settings):
-    #   echo "$TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
+    # Pulling needs access to the package; when that is not available the build
+    # block below is used instead.
     image: ghcr.io/lyy1119/mycalendar:latest
     pull_policy: missing
 

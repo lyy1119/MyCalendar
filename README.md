@@ -383,12 +383,7 @@ make deploy        # 先拉取 CI 发布的镜像，拉不到就本地构建
 docker compose logs -f              # 看启动日志，确认生效的地址/数据库/时区
 ```
 
-**默认是从 ghcr 拉取已发布的镜像**（`pull_policy: missing`：本地有就用本地的，没有就拉）。首次拉取需要登录一次，因为 ghcr 的包默认私有：
-
-```bash
-echo "$TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
-# 或者把包改成公开：GitHub → 头像 → Packages → mycalendar → Package settings
-```
+**默认是从 ghcr 拉取已发布的镜像**（`pull_policy: missing`：本地有就用本地的，没有就拉）。拉取需要能访问 ghcr 并具备该包的读取权限；拿不到就走 `make deploy` 的本地构建分支，不影响使用。
 
 **「拉取失败就本地构建」这件事 Compose 自己做不到。** 它的 `pull_policy` 只有 `always` / `never` / `missing` / `build` 四个值，没有「先拉、拉不到再构建」；直接 `docker compose up` 在拉取失败时就是报错退出——这正是你遇到的那个现象。所以这一步放在了 `make deploy` 里：
 
@@ -436,15 +431,7 @@ docker run -d --name mycalendar -p 8080:8080 -v mycalendar-data:/data \
   ghcr.io/lyy1119/mycalendar:latest
 ```
 
-**注意 ghcr 的包默认是私有的**，在另一台机器上直接 pull 会报 `unauthorized`。两种处理：
-
-```bash
-# 一、先登录（口令用带 read:packages 权限的 PAT，不是账号密码）
-echo "$GHCR_TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
-
-# 二、把包改成公开：GitHub → 个人头像 → Packages → mycalendar → Package settings
-#     → Change visibility → Public
-```
+在另一台机器上 pull 需要先具备该包的读取权限，否则会报 `unauthorized`；拿不到权限时本地构建即可（`make deploy` 会自动走这条路）。
 
 
 用 compose 的话什么都不用改：模板默认就是这个镜像加 `pull_policy: missing`。想强制每次都拉最新，把 `missing` 改成 `always`。
