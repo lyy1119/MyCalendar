@@ -1,11 +1,15 @@
-# Convenience wrapper for the Dockerfile. Optional: `docker build` and
-# `docker run` on their own are enough, see the README.
+# Convenience wrapper for the Dockerfile.
 #
+# Copy it first, then edit the copy: the live docker-compose.yml is gitignored,
+# so local settings (host paths, timezone, registry) never reach the repository
+# and never conflict on a pull.
+#
+#   cp docker-compose.yml.template docker-compose.yml
 #   docker compose up -d --build
 #
 # Where the database lives is the one thing worth thinking about here; see
-# "Database on the host" in the README. In short: mount the /data directory,
-# not the .db file.
+# "数据库放到宿主机" in the README. In short: mount the /data directory, not the
+# .db file.
 
 services:
   mycalendar:
@@ -17,7 +21,34 @@ services:
         # which is why it is not named MYCAL_*. Set it inline:
         #   BUILD_VERSION=1.2.3 docker compose up -d --build
         VERSION: ${BUILD_VERSION:-compose}
+
+        # Where the build's `go mod download` and `npm ci` reach the network.
+        #
+        # The Go default, proxy.golang.org, is unreachable from some networks
+        # (mainland China in particular), and the build then fails with a terse
+        # `go mod download ... exit code: 1`. Defaulting to a mirror here keeps
+        # that from biting; set GOPROXY= to go back to the official proxy.
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+
+        # If the build host needs a proxy to reach the internet, export it in
+        # your shell and it is picked up here. An unset value stays empty, which
+        # means "no proxy".
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+
+        # To use the image published by CI instead of building at all, drop the
+        # build: block and use:
+        #   image: ghcr.io/lyy1119/mycalendar:latest
+        #   pull_policy: always
     image: mycalendar:latest
+
+    # Without this, `docker compose up` looks up `mycalendar:latest` in Docker
+    # Hub before building, and fails with a pull error for a name that only ever
+    # exists locally. `build` means: never pull, always build. Change it to
+    # `always` when using the published ghcr image above.
+    pull_policy: build
+
     container_name: mycalendar
     restart: unless-stopped
     ports:

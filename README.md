@@ -360,6 +360,10 @@ docker build -t mycalendar .
 # 运行（数据放在命名卷里，重建容器不丢）
 docker run -d --name mycalendar -p 8080:8080 -v mycalendar-data:/data mycalendar
 
+# 或者直接用 CI 发布的镜像（不用本地编译，也不会卡在 go mod download）
+docker run -d --name mycalendar -p 8080:8080 -v mycalendar-data:/data \
+  ghcr.io/lyy1119/mycalendar:latest
+
 # 或者用 compose：先从模板复制一份，见下
 cp docker-compose.yml.template docker-compose.yml
 docker compose up -d --build
@@ -391,6 +395,95 @@ docker compose logs -f          # 看启动日志，确认生效的地址/数据
 | 跨域来源 | `MYCAL_CORS_ORIGINS`，默认 `*`；本服务无鉴权，谨慎放宽 |
 
 `.gitignore` 忽略 `docker-compose.yml` 还有个附带好处：万一你把宿主路径、内网地址甚至口令写进了 `environment:`，也不会被 `git add` 带上去。
+
+### 镜像发布（CI）
+
+`.github/workflows/release.yml` 在每次推送到 `main` 时自动完成：跑测试 → 算出下一个版本号 → 构建镜像推到 ghcr.io → 打 git tag → 建 GitHub Release。
+
+**版本号是自动的**：`.github/scripts/next-version.sh` 读取仓库里已有的稳定 `vX.Y.Z` tag，**把第三位 +1**（`v0.1.2` → `v0.1.3`）。没有任何 tag 时从 `v0.1.0` 起步——项目还没到 1.0，凭空做 patch 递进会误导。只认稳定的 `vX.Y.Z`，预发布和随手打的 tag（比如 `v2`、`v0.11.0-beta`）会被忽略，免得它们把版本号带偏。
+
+> 有个坑值得说明：`git tag --sort=-v:refname` 会把 `v2`、`v0.11.0-beta`、`v0.10.1-rc.1` 排在稳定的 `v0.10.0` **前面**，所以脚本必须先用正则过滤再取第一条，否则会拿 `v2` 去算。这一条已用一组 tag 状态实测过。
+
+镜像标签有三种：`<版本号>`（如 `0.1.3`）、`latest`、`sha-<短哈希>`。`latest` 始终指向 main 上最新的一次发布。
+
+想手动指定递进哪一位：Actions 页面用 **workflow_dispatch** 选 patch / minor / major。
+
+不想为某次提交发版：在提交信息里写 `[skip release]`，测试照跑，只是不发版。
+
+部署时用发布出来的镜像即可，不需要在目标机器上编译：
+
+```bash
+docker pull ghcr.io/lyy1119/mycalendar:latest
+docker run -d --name mycalendar -p 8080:8080 -v mycalendar-data:/data \
+  ghcr.io/lyy1119/mycalendar:latest
+```
+
+**注意 ghcr 的包默认是私有的**，在另一台机器上直接 pull 会报 `unauthorized`。两种处理：
+
+```bash
+# 一、先登录（口令用带 read:packages 权限的 PAT，不是账号密码）
+echo "$GHCR_TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
+
+# 二、把包改成公开：GitHub → 个人头像 → Packages → mycalendar → Package settings
+#     → Change visibility → Public
+```
+
+
+用 compose 的话，把模板里的 `build:` 整段删掉，改成：
+
+```yaml
+    image: ghcr.io/lyy1119/mycalendar:latest
+    pull_policy: always      # 注意：本地构建时这里必须是 build
+```
+
+只构建 amd64。要覆盖 Raspberry Pi 或 arm 的 NAS，在 workflow 的 `platforms:` 里加上 `linux/arm64` 即可——能work，只是 Go 编译会在模拟下跑，构建时间翻倍。
+
+> 自动递增意味着**每次推 main 都会发一个版本**。对这个项目是合适的（一次提交一个可回溯的镜像）；若你更想要「只有显式打 tag 才发版」，把 workflow 里的 `on:` 改成 `push: tags: ['v*']`、并去掉自动算版本那一步即可。
+
+### 构建时连不上网
+
+`docker compose up -d --build` 时报这种错：
+
+```
+failed to solve: process "/bin/sh -c go mod download" did not complete successfully: exit code: 1
+```
+
+**这是网络问题，不是 Dockerfile 的问题。** 而且这行本身没用——真正的原因（DNS 解析失败、TLS 报错、连接超时）在它上面的几行里。先看完整输出：
+
+```bash
+docker compose build --no-cache --progress=plain 2>&1 | grep -B 20 "go mod download"
+```
+
+两种常见原因，症状一样：
+
+**一、`proxy.golang.org` 在你的网络里不通**（国内最常见）。Go 默认的模块代理是 `proxy.golang.org`，被墙时会直接失败。改用镜像：
+
+```bash
+docker compose build --build-arg GOPROXY=https://goproxy.cn,direct
+# 或直接 docker build：
+docker build --build-arg GOPROXY=https://goproxy.cn,direct -t mycalendar .
+```
+
+模板里 `build.args.GOPROXY` 已经默认写成 `https://goproxy.cn,direct`，所以**从模板复制出来的 compose 不用额外做什么**；想回到官方代理就设 `GOPROXY=`。镜像代理同时代理校验和数据库（sumdb），所以 `GOSUMDB` 不用动。
+
+**二、宿主机要走代理才能上网，但构建容器没有代理。** 这时宿主能通、容器不通，表现完全一样。把代理导出到 shell 即可，模板会转发：
+
+```bash
+export HTTPS_PROXY=http://10.0.0.1:8080
+docker compose up -d --build
+```
+
+（`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 三个都已接到 Dockerfile 的构建参数上；它们只作用于构建阶段，**不会进最终镜像**——最终阶段是 scratch，不继承任何环境变量。）
+
+先自查一下网络：
+
+```bash
+docker run --rm golang:1.27-alpine sh -c \
+  "apk add --no-cache curl >/dev/null && curl -sS -o /dev/null -w '%{http_code}\n' https://proxy.golang.org/"
+# 000 或超时 = 不通；200 = 通
+```
+
+**想彻底摆脱构建期网络**：在本地 `go mod vendor` 并把 `vendor/` 提交进仓库，再给 Dockerfile 的构建加上 `-mod=vendor`。代价是仓库里多出一份依赖源码，好处是构建完全离线。目前没这么做。
 
 ### 镜像内置的默认值
 

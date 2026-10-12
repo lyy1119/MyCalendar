@@ -16,6 +16,16 @@ FROM node:24-alpine AS web
 
 WORKDIR /src
 
+# Leave through a proxy if the build host needs one; see the note on the
+# backend stage. Consumed here only: the runtime image is scratch and inherits
+# nothing from this stage.
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY=""
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
+
 # Dependencies first so a source-only change does not reinstall them.
 COPY web/package.json web/package-lock.json ./web/
 RUN cd web && npm ci
@@ -29,6 +39,32 @@ RUN cd web && npm run build
 FROM golang:1.27-alpine AS api
 
 WORKDIR /src
+
+# How the module download reaches the network.
+#
+# The default proxy, proxy.golang.org, is unreachable from some networks --
+# mainland China in particular -- and the failure is unhelpful: BuildKit reports
+# only `process "/bin/sh -c go mod download" did not complete successfully: exit
+# code: 1`, while the reason (a DNS failure, a TLS error or a timeout) is in the
+# lines further up the log. Point GOPROXY at a mirror when that happens:
+#
+#   docker build --build-arg GOPROXY=https://goproxy.cn,direct .
+#
+# A mirror also serves the checksum database, so GOSUMDB needs no change.
+#
+# Set the proxy variables if the build has to leave through one, which is a
+# different problem with the same symptom: the host can reach the internet but
+# the build container cannot.
+#
+# None of this reaches the runtime image; scratch inherits no environment.
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG NO_PROXY=""
+ENV GOPROXY=${GOPROXY} \
+    HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY}
 
 COPY go.mod go.sum ./
 RUN go mod download
