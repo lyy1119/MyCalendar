@@ -421,9 +421,22 @@ docker compose up -d --build                          # 拉不到就本地编译
 
 镜像标签有三种：`<版本号>`（如 `0.1.3`）、`latest`、`sha-<短哈希>`。`latest` 始终指向 main 上最新的一次发布。
 
-想手动指定递进哪一位：Actions 页面用 **workflow_dispatch** 选 patch / minor / major。
+**主动指定递进哪一位**（比如改了大版本要发 `v1.0.0`）：
 
-不想为某次提交发版：在提交信息里写 `[skip release]`，测试照跑，只是不发版。
+| 方式 | 用法 |
+|---|---|
+| 提交信息里写标记 | `[major]` / `[minor]` / `[patch]`，取提交信息里第一个出现的 |
+| Actions 页面手动触发 | workflow_dispatch，选 patch / minor / major（它的优先级高于提交信息里的标记） |
+
+```bash
+# 例如把当前版本切成下一个大版本
+git commit --allow-empty -m "Release v1.0.0 [major]"
+git push
+```
+
+**不想为某次提交发版**：提交信息里写 `[skip release]`，测试照跑，只是不发版（它优先于 bump 标记）。
+
+> 注意：`[major]` 这类标记只影响**版本号怎么算**，它不会替你改数据库迁移。改大版本时该动的迁移仍然要自己改，见下面「版本与数据迁移」。
 
 部署时用发布出来的镜像即可，不需要在目标机器上编译：
 

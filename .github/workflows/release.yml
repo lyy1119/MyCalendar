@@ -4,8 +4,17 @@ name: Release
 # container image on ghcr.io. The patch number increments itself, computed from
 # the tags that already exist, so nobody edits a version file by hand.
 #
-# Put [skip release] in a commit message to publish nothing for that push -- the
-# tests still run, only the release is skipped.
+# How the version moves:
+#
+#   push to main            patch bump, computed from the existing tags
+#   commit message [minor]  minor bump instead of patch
+#   commit message [major]  major bump instead of patch
+#   commit message [skip release]
+#                           publish nothing for that push; the tests still run
+#   workflow_dispatch       pick the bump by hand, which wins over the message
+#
+# A database format change always needs a major bump, so [major] is the usual way
+# to cut one without reaching for the Actions UI.
 
 on:
   push:
@@ -83,10 +92,27 @@ jobs:
       - name: Compute the next version
         id: next
         env:
-          BUMP: ${{ inputs.bump || 'patch' }}
+          # A manual dispatch names the bump outright; otherwise it comes from
+          # the commit message, and failing that it is a patch.
+          DISPATCH_BUMP: ${{ inputs.bump }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
-          version="$(.github/scripts/next-version.sh "$BUMP")"
+
+          bump="$DISPATCH_BUMP"
+          if [ -z "$bump" ]; then
+            case "$(printf '%s' "$COMMIT_MESSAGE" | grep -oE '\[(major|minor|patch)\]' | head -n 1)" in
+              '[major]') bump=major ;;
+              '[minor]') bump=minor ;;
+              '[patch]') bump=patch ;;
+              *)         bump=patch ;;
+            esac
+            echo "No dispatch input; bump '$bump' taken from the commit message"
+          else
+            echo "Bump '$bump' taken from the dispatch input"
+          fi
+
+          version="$(.github/scripts/next-version.sh "$bump")"
           # ghcr.io refuses uppercase in an image name, and this repository is
           # MyCalendar, so lower-case the whole path.
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
