@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	eventColumns    = `id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at`
+	eventColumns    = `id, title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at`
 	reminderColumns = `id, event_id, remind_at, created_at`
 
 	// reminderChunk bounds the size of an IN (...) clause; SQLite limits the
@@ -39,9 +39,9 @@ func (s *Store) CreateEvent(ctx context.Context, ev model.Event, reminders []int
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events (title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.Title, strOrNil(ev.Notes), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
+		`INSERT INTO events (title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.Title, strOrNil(ev.Notes), strOrNil(ev.Location), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
 		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.CreatedAt, ev.UpdatedAt)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("insert event: %w", err)
@@ -106,10 +106,10 @@ func (s *Store) UpdateEvent(ctx context.Context, ev model.Event, reminders []int
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE events
-		    SET title = ?, notes = ?, start_at = ?, end_at = ?, is_all_day = ?,
+		    SET title = ?, notes = ?, location = ?, start_at = ?, end_at = ?, is_all_day = ?,
 		        event_date = ?, is_task = ?, is_completed = ?, updated_at = ?
 		  WHERE id = ?`,
-		ev.Title, strOrNil(ev.Notes), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
+		ev.Title, strOrNil(ev.Notes), strOrNil(ev.Location), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
 		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.UpdatedAt, ev.ID)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("update event: %w", err)
@@ -312,6 +312,7 @@ func scanEvent(sc rowScanner) (model.Event, error) {
 	var (
 		ev        model.Event
 		notes     sql.NullString
+		location  sql.NullString
 		endAt     sql.NullInt64
 		eventDate sql.NullString
 		allDay    int64
@@ -319,12 +320,13 @@ func scanEvent(sc rowScanner) (model.Event, error) {
 		completed int64
 	)
 	if err := sc.Scan(
-		&ev.ID, &ev.Title, &notes, &ev.StartAt, &endAt, &allDay,
+		&ev.ID, &ev.Title, &notes, &location, &ev.StartAt, &endAt, &allDay,
 		&eventDate, &task, &completed, &ev.CreatedAt, &ev.UpdatedAt,
 	); err != nil {
 		return model.Event{}, err
 	}
 	ev.Notes = nullStr(notes)
+	ev.Location = nullStr(location)
 	ev.EndAt = nullInt(endAt)
 	ev.EventDate = nullStr(eventDate)
 	ev.IsAllDay = allDay != 0

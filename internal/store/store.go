@@ -1,7 +1,8 @@
 // Package store owns the SQLite persistence layer.
 //
-// The schema is exactly the two tables specified for the project; the only
-// additions are indexes, which do not change the column layout.
+// The schema is the two tables the project specifies plus a small meta table
+// holding the database format version. Migrations between major versions live
+// in migrate.go.
 package store
 
 import (
@@ -18,43 +19,6 @@ import (
 	// target architecture the intranet deployment needs.
 	_ "modernc.org/sqlite"
 )
-
-// schemaVersion is the user_version written after migrations run.
-const schemaVersion = 1
-
-// migrations holds one SQL script per schema version, index 0 upgrading
-// user_version 0 to 1.
-var migrations = []string{
-	`
-CREATE TABLE IF NOT EXISTS events (
-    id           INTEGER PRIMARY KEY,
-    title        TEXT    NOT NULL,
-    notes        TEXT,
-    start_at     INTEGER NOT NULL,
-    end_at       INTEGER,
-    is_all_day   INTEGER NOT NULL DEFAULT 0,
-    event_date   TEXT,
-    is_task      INTEGER NOT NULL DEFAULT 0,
-    is_completed INTEGER NOT NULL DEFAULT 0,
-    created_at   INTEGER NOT NULL,
-    updated_at   INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS reminders (
-    id         INTEGER PRIMARY KEY,
-    event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-    remind_at  INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_start_at   ON events(start_at);
-CREATE INDEX IF NOT EXISTS idx_events_end_at     ON events(end_at);
-CREATE INDEX IF NOT EXISTS idx_events_event_date ON events(event_date);
-CREATE INDEX IF NOT EXISTS idx_events_flags      ON events(is_all_day, is_task, is_completed);
-CREATE INDEX IF NOT EXISTS idx_reminders_event   ON reminders(event_id);
-CREATE INDEX IF NOT EXISTS idx_reminders_at      ON reminders(remind_at);
-`,
-}
 
 // Store is a handle on the SQLite database.
 type Store struct {
@@ -194,38 +158,4 @@ func (s *Store) Location() string {
 		return s.path
 	}
 	return describePath(s.path)
-}
-
-// migrate applies every pending schema version inside a single transaction.
-func (s *Store) migrate(ctx context.Context) error {
-	var current int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if current > schemaVersion {
-		return fmt.Errorf("database schema version %d is newer than this binary supports (%d)", current, schemaVersion)
-	}
-	if current == schemaVersion {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	for v := current; v < schemaVersion; v++ {
-		if _, err := tx.ExecContext(ctx, migrations[v]); err != nil {
-			return fmt.Errorf("apply schema version %d: %w", v+1, err)
-		}
-	}
-	// PRAGMA does not accept bound parameters; the value is a compile-time int.
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-		return fmt.Errorf("stamp schema version: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration: %w", err)
-	}
-	return nil
 }

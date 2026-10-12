@@ -753,3 +753,35 @@ body {
 .mc-theme__hint {
   margin-left: 6px;
 }
+
+/* ------------------------------------------------------------ edit unlock */
+
+.mc-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mc-border-soft);
+}
+
+.mc-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mc-switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--mc-accent);
+  cursor: pointer;
+}
+
+/* A nudge rather than a success notice, so it reads differently. */
+.mc-toast--notice {
+  bottom: 76px;
+  border-color: var(--mc-accent);
+}

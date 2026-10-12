@@ -129,6 +129,12 @@ try {
 
   // Every query is scoped to .mc-calendar: the sidebar mini calendar renders
   // its own column headers, day cells and all-day events.
+  // Editing existing events is locked by default, and unlocking persists in
+  // localStorage. Check the default, then unlock so the rest of this suite can
+  // click through to the editor -- the earlier checks are read-only.
+  const unlockSwitch = page.locator('.mc-sidebar .mc-edit input[type="checkbox"]')
+  check('editing is locked by default', (await unlockSwitch.isChecked()) === false)
+
   const layout = await page.evaluate(() => {
     const root = document.querySelector('.mc-calendar')
     const scroller = root.querySelector('.fc-scroller-liquid-absolute')
@@ -236,6 +242,10 @@ try {
   }
 
   // ------------------------------------------- click through to the editor
+
+  await unlockSwitch.check()
+  await page.waitForTimeout(200)
+  check('unlocking editing takes effect', (await unlockSwitch.isChecked()) === true)
 
   // Overlapping events are stacked, so the exposed left edge is the clickable
   // part, exactly as in Google Calendar.

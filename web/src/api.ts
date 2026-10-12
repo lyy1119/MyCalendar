@@ -17,6 +17,7 @@ export interface ApiEvent {
   id: number
   title: string
   notes: string | null
+  location: string | null
   start_at: number
   end_at: number | null
   is_all_day: boolean
@@ -41,6 +42,7 @@ export interface ApiEvent {
 export interface EventInput {
   title?: string
   notes?: string | null
+  location?: string | null
   start_at?: number
   end_at?: number | null
   is_all_day?: boolean

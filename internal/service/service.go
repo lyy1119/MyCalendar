@@ -22,12 +22,13 @@ import (
 
 // Input limits enforced on write.
 const (
-	MaxTitleRunes   = 500
-	MaxNotesRunes   = 20000
-	MaxReminders    = 50
-	MaxQueryRunes   = 200
-	MaxPageSize     = 2000
-	DefaultPageSize = 0 // 0 means "no limit"
+	MaxTitleRunes    = 500
+	MaxNotesRunes    = 20000
+	MaxLocationRunes = 500
+	MaxReminders     = 50
+	MaxQueryRunes    = 200
+	MaxPageSize      = 2000
+	DefaultPageSize  = 0 // 0 means "no limit"
 )
 
 // Accepted range for Unix-second timestamps: 1970-01-01 through 2099-12-31.
@@ -149,6 +150,24 @@ func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Locatio
 				verr.Add("notes", fmt.Sprintf("must be at most %d characters", MaxNotesRunes))
 			}
 			ev.Notes = &n
+		}
+	}
+
+	if in.Location.Set {
+		if in.Location.Value == nil {
+			ev.Location = nil
+		} else {
+			l := strings.TrimSpace(*in.Location.Value)
+			if utf8.RuneCountInString(l) > MaxLocationRunes {
+				verr.Add("location", fmt.Sprintf("must be at most %d characters", MaxLocationRunes))
+			}
+			if l == "" {
+				// An emptied box means "no location", stored as NULL rather
+				// than as an empty string that would read back as present.
+				ev.Location = nil
+			} else {
+				ev.Location = &l
+			}
 		}
 	}
 

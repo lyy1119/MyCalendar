@@ -40,6 +40,8 @@ export interface EventDraft {
   id: number | null
   title: string
   notes: string
+  /** Free text; an emptied box is sent as null, not as "". */
+  location: string
   isAllDay: boolean
   /** YYYY-MM-DD, used when isAllDay. */
   eventDate: string
@@ -117,6 +119,7 @@ export function draftFromEvent(event: ApiEvent): EventDraft {
     id: event.id,
     title: event.title,
     notes: event.notes ?? '',
+    location: event.location ?? '',
     isAllDay: event.is_all_day,
     eventDate: event.event_date ?? toDateOnly(start),
     start: toDateTimeLocal(start),
@@ -134,6 +137,7 @@ export function draftForRange(start: Date, end: Date | null, allDay: boolean): E
     id: null,
     title: '',
     notes: '',
+    location: '',
     isAllDay: allDay,
     eventDate: toDateOnly(start),
     start: toDateTimeLocal(start),
@@ -203,11 +207,14 @@ export function draftToInput(draft: EventDraft): DraftValidation {
   const reminders = reminderTimes.map((remind_at) => ({ remind_at }))
 
   const notes = draft.notes.trim()
+  const location = draft.location.trim()
   const base: EventInput = {
     reminders,
     title,
-    // An empty notes box means "no notes", stored as NULL.
+    // An empty box means "not set", stored as NULL rather than as an empty
+    // string, which would read back as a location that exists.
     notes: notes === '' ? null : notes,
+    location: location === '' ? null : location,
     is_task: draft.isTask,
     // The server clears this anyway when the event is not a task.
     is_completed: draft.isTask ? draft.isCompleted : false,

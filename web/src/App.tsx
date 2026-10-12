@@ -6,6 +6,7 @@ import type { DateClickArg } from '@fullcalendar/interaction'
 import { ApiError, getEvent, listEvents, type ApiEvent } from './api'
 import { draftForRange, draftFromEvent, type EventDraft } from './eventMapping'
 import { BROWSER_TZ } from './time'
+import { readEditUnlocked, saveEditUnlocked } from './theme'
 import { CalendarPane } from './components/CalendarPane'
 import { EventDialog } from './components/EventDialog'
 import { Sidebar } from './components/Sidebar'
@@ -21,6 +22,15 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  /**
+   * Whether edits to existing events are unlocked.
+   *
+   * Locked by default. Creating is deliberately unaffected: the sidebar's
+   * "新建日程" button, dragging empty grid space and clicking the all-day row
+   * all keep working, because the lock is about changing what is already there.
+   */
+  const [editUnlocked, setEditUnlocked] = useState<boolean>(() => readEditUnlocked())
+  const [lockedNotice, setLockedNotice] = useState<string | null>(null)
 
   // The range currently on screen, so mutations can refresh exactly that.
   const rangeRef = useRef<{ from: string; to: string } | null>(null)
@@ -59,6 +69,18 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [toast])
 
+  useEffect(() => {
+    saveEditUnlocked(editUnlocked)
+    if (editUnlocked) setLockedNotice(null)
+  }, [editUnlocked])
+
+  // The notice is only a nudge; it should not sit there forever.
+  useEffect(() => {
+    if (!lockedNotice) return
+    const timer = window.setTimeout(() => setLockedNotice(null), TOAST_MS)
+    return () => window.clearTimeout(timer)
+  }, [lockedNotice])
+
   const handleDatesSet = useCallback(
     (arg: DatesSetArg) => {
       // startStr/endStr are the window as ISO strings carrying the zone offset.
@@ -76,6 +98,12 @@ export default function App() {
 
   const handleEventClick = useCallback(
     (arg: EventClickArg) => {
+      // The lock guards existing events only; opening the editor is how they
+      // get changed or deleted, so that is what it stops.
+      if (!editUnlocked) {
+        setLockedNotice('编辑已锁定：请在左侧打开「编辑已保存的日程」后再修改')
+        return
+      }
       const id = Number(arg.event.id)
       const local = events.find((e) => e.id === id)
       if (local) {
@@ -87,7 +115,7 @@ export default function App() {
         .then((event) => setDialogDraft(draftFromEvent(event)))
         .catch((err: unknown) => setLoadError(err instanceof ApiError ? err.fullMessage : String(err)))
     },
-    [events],
+    [events, editUnlocked],
   )
 
   const handleSelect = useCallback((arg: DateSelectArg) => {
@@ -132,7 +160,13 @@ export default function App() {
 
   return (
     <div className="mc-app">
-      <Sidebar activeDate={activeDate} onPickDate={handlePickDate} onNew={handleNew} />
+      <Sidebar
+        activeDate={activeDate}
+        onPickDate={handlePickDate}
+        onNew={handleNew}
+        editUnlocked={editUnlocked}
+        onEditUnlockedChange={setEditUnlocked}
+      />
 
       <main className="mc-main">
         {loadError && (
@@ -161,6 +195,11 @@ export default function App() {
       )}
 
       {toast && <div className="mc-toast" role="status">{toast}</div>}
+      {lockedNotice && (
+        <div className="mc-toast mc-toast--notice" role="status">
+          {lockedNotice}
+        </div>
+      )}
     </div>
   )
 }

@@ -21,6 +21,9 @@ interface Props {
   activeDate: Date
   onPickDate: (date: Date) => void
   onNew: () => void
+  /** Whether editing existing events is unlocked. */
+  editUnlocked: boolean
+  onEditUnlockedChange: (unlocked: boolean) => void
 }
 
 /**
@@ -57,7 +60,13 @@ function useTheme(): [ThemeMode, (mode: ThemeMode) => void, 'light' | 'dark'] {
  * The mini month follows the main calendar and jumps it when a day is picked,
  * which is the behaviour of the layout reference.
  */
-export function Sidebar({ activeDate, onPickDate, onNew }: Props) {
+export function Sidebar({
+  activeDate,
+  onPickDate,
+  onNew,
+  editUnlocked,
+  onEditUnlockedChange,
+}: Props) {
   const miniRef = useRef<FullCalendar>(null)
   const [themeMode, setThemeMode, resolvedTheme] = useTheme()
 
@@ -132,6 +141,23 @@ export function Sidebar({ activeDate, onPickDate, onNew }: Props) {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="mc-edit">
+        <label className="mc-switch">
+          <input
+            type="checkbox"
+            checked={editUnlocked}
+            onChange={(e) => onEditUnlockedChange(e.target.checked)}
+          />
+          <span>编辑已保存的日程</span>
+        </label>
+        {/* Creating is deliberately never gated, so the hint has to say so. */}
+        <p className="mc-hint">
+          {editUnlocked
+            ? '点击日程可修改或删除'
+            : '已锁定：点击日程不会打开编辑框。「新建日程」随时可用'}
+        </p>
       </div>
     </aside>
   )

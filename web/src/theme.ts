@@ -49,8 +49,35 @@ export function applyTheme(mode: ThemeMode): void {
 
 /** Persist a mode. Failure is not worth surfacing: the theme still applies. */
 export function saveThemeMode(mode: ThemeMode): void {
+  writeFlag(STORAGE_KEY, mode)
+}
+
+/* ------------------------------------------------------------ edit unlock */
+
+const EDIT_KEY = 'mycalendar.editUnlocked'
+
+/**
+ * Whether editing existing events is unlocked.
+ *
+ * Off by default: the calendar opens read-only, and changing anything is a
+ * deliberate act. Creating is never gated -- the sidebar button always works.
+ */
+export function readEditUnlocked(): boolean {
   try {
-    window.localStorage.setItem(STORAGE_KEY, mode)
+    return window.localStorage.getItem(EDIT_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+/** Persist the edit unlock. */
+export function saveEditUnlocked(unlocked: boolean): void {
+  writeFlag(EDIT_KEY, unlocked ? 'true' : 'false')
+}
+
+function writeFlag(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value)
   } catch {
     // Ignore: the choice simply will not survive a reload.
   }

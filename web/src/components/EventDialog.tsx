@@ -190,6 +190,17 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
           )}
 
           <label className="mc-field">
+            <span className="mc-field__label">地点</span>
+            <input
+              className="mc-input"
+              value={draft.location}
+              maxLength={500}
+              placeholder="添加地点"
+              onChange={(e) => patch({ location: e.target.value })}
+            />
+          </label>
+
+          <label className="mc-field">
             <span className="mc-field__label">备注</span>
             <textarea
               className="mc-input mc-textarea"

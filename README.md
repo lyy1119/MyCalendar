@@ -18,6 +18,7 @@
 - [前端](#前端)
 - [核心设计决策](#核心设计决策)
 - [Docker 部署](#docker-部署)
+- [版本与数据迁移](#版本与数据迁移)
 - [测试](#测试)
 - [项目结构](#项目结构)
 - [后续可做](#后续可做)
@@ -33,8 +34,9 @@
 3. **修改日程**，支持部分更新（PATCH），字段语义区分"未提供"、"置空"和"赋值"。
    **提醒（reminders）既可随日程整体写入，也可通过独立接口单独增删改查**。
 4. **时区处理**：存储与解释解耦，`tz` 参数按请求决定"这一天"的边界。
-5. **提醒（reminders）**：可写入、随日程返回，但**不发送**任何通知。
-6. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
+5. **提醒（reminders）**：独立的增删改查接口，可随日程整体写入，但**不发送**任何通知。
+6. **数据库自动迁移**：启动时检查格式版本并按主版本迁移，只支持逐个大版本升级，**详见[版本与数据迁移](#版本与数据迁移)**。
+7. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
 
 **前端**：React + FullCalendar，参考 Google Calendar 的深色版式，包含「4 天」与「周」两种视图、置顶的全天日程行、可滚动时间网格，点击日程即可编辑。
 
@@ -579,6 +581,74 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 
 ---
 
+## 版本与数据迁移
+
+### 版本号的含义
+
+版本号是 `主.次.补丁`。补丁号由 CI 在每次推送到 main 时自动 +1（见「镜像发布（CI）」），主版本号手动决定。
+
+**规则：只要改动了数据库格式，就必须升主版本号。** 反过来不成立——有时候只是改了 API 也会升主版本，那种情况下**不需要写迁移**。
+
+### 升级前必读：只能逐个主版本升级
+
+> ## ⚠️ 只能逐个大版本升级，不能跳版本
+>
+> 数据库只能从**上一个主版本**升级到当前主版本。例如现在要从 `v0.1.0` 升到 `v1.0.0`，直接升可以；但将来从 `v1.x` 跳到 `v3.x` **会被拒绝启动**，必须先跑一遍 `v2.x`。
+>
+> 原因：每一步迁移只在它紧邻的上一个版本上开发和测试过。跨版本串联执行等于把没测过的路径串起来跑，出问题就是数据问题。
+>
+> 被拒绝时启动会失败并明确告诉你该先跑哪个版本，**不会**动你的数据：
+>
+> ```
+> mycalendar: database format 1 cannot be upgraded straight to 3: this project
+> upgrades one major version at a time. Run the release for each intermediate
+> major version, in order, before starting this one
+> ```
+
+### 迁移是怎么工作的
+
+启动时自动进行，不需要手工执行任何命令：
+
+1. 打开数据库，读 `meta` 表里的 `format_version`
+2. 没有这个表或没有这个值 → 认为是很久以前（`v1.0.0` 之前）写的库，格式按 `0` 处理
+3. 比当前版本旧 → 执行对应迁移，**每一步都在一个事务里完成，并同时更新版本号**；中途断电或被杀，下次启动会从原状态重来，不会留下半迁移的库
+4. 等于当前版本 → 什么都不做（所以每次启动都会检查，重复启动是安全的）
+5. 比当前版本新 → 拒绝启动，提示你升级服务端而不是降级
+
+数据库格式版本与当前二进制的对应关系写在 `internal/store/migrate.go` 顶部的注释里。
+
+### 改大版本时要动的地方
+
+迁移是按版本号排好的模块化列表，就在 `internal/store/migrate.go`：
+
+```go
+// FormatVersion 必须与发布的主版本号保持一致
+const FormatVersion = 1
+
+// migrations[i] 把格式从 i 升到 i+1
+var migrations = []step{
+    {from: 0, to: 1, notes: "add events.location", apply: func(ctx, tx) error {
+        _, err := tx.ExecContext(ctx, `ALTER TABLE events ADD COLUMN location TEXT`)
+        return err
+    }},
+    // 下一个主版本写在这里。格式没变就留空 apply：
+    // {from: 1, to: 2, notes: "no format change", apply: nil},
+}
+```
+
+升主版本时：
+
+1. 把 `FormatVersion` 改成新的主版本号
+2. 在 `migrations` 末尾加一条 `{from: 旧, to: 新, ...}`
+3. **格式真的变了** → 写 `apply`：注意 `ALTER TABLE` 只能往表尾追加列，所以 `currentSchema` 里也要把新列放在末尾，否则"全新库"和"迁移来的库"结构会不一致（有一条测试专门比对这两者，不一致会直接失败）
+4. **格式没变**（只是改了 API 之类）→ `apply: nil`，并且 `notes` 要写清楚是"无格式变化"。留空是**刻意的**，不是忘了写
+
+`apply: nil` 的步骤仍然会把版本号往前推，所以"某个主版本没有格式变化"这件事会被如实记录下来。
+
+> 写迁移时请遵守：**永远不要修改或删除已经发布过的步骤**。那些步骤已经在别人的库里执行过了，改它只会让新旧库产生分歧。要修正就在后面追加新的步骤。
+
+---
+
 ## 测试
 
 ```bash
@@ -632,7 +702,8 @@ internal/api/            HTTP 层：路由、中间件、请求解析、错误�
   ├── events.go          日程各接口的处理器
   └── help.go            /help 文档的数据结构与 Markdown 渲染
 internal/service/        领域层：校验与规范化（"字段该如何理解"都在这里）
-internal/store/          SQLite 持久化：建表/迁移、增删改查、区间查询
+internal/store/          SQLite 持久化：增删改查、区间查询
+  └── migrate.go         数据库格式版本与按主版本迁移的步骤表（改大版本时改这里）
 internal/calendar/       时区相关的日历窗口计算（日/周/月/自定义）
 internal/model/          与表结构一一对应的类型，以及 Optional / EventView
 internal/config/         环境变量配置
@@ -646,7 +717,7 @@ internal/apperr/         错误分类（校验错误、参数错误、未找到�
 
 索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`reminders(event_id)`、`reminders(remind_at)`。
 
-建表通过 `PRAGMA user_version` 做版本化迁移，重复启动幂等；若数据库版本高于当前二进制支持的版本，会拒绝启动而不是冒险运行。
+数据库格式版本记在 `meta` 表的 `format_version` 上（`v1.0.0` 之前用的是 `PRAGMA user_version`，现在那个值只是历史遗留，不再读取）。迁移在启动时自动进行，每一步一个事务、与版本号同时提交，因此中途中断只会重来而不会留下半迁移的库。重复启动幂等；若数据库来自更新的版本会拒绝启动。规则与改法见[版本与数据迁移](#版本与数据迁移)。
 
 SQLite 连接使用 WAL 日志模式、`busy_timeout=5000`，并为每个连接启用外键约束（`foreign_keys` 是连接级设置，因此写在 DSN 里以确保连接池中每个连接都生效）——这也是删除日程能级联清理提醒的前提。
 

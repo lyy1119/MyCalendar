@@ -1,0 +1,336 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/lyy1119/MyCalendar/internal/model"
+)
+
+// legacySchema is the exact schema the v0.1.0 release created: no meta table,
+// no location column, and PRAGMA user_version stamped by the migrator of the
+// day. Written by hand here because migrations must keep working against files
+// that already exist in the field, and the old code that produced them is gone.
+const legacySchema = `
+CREATE TABLE IF NOT EXISTS events (
+    id           INTEGER PRIMARY KEY,
+    title        TEXT    NOT NULL,
+    notes        TEXT,
+    start_at     INTEGER NOT NULL,
+    end_at       INTEGER,
+    is_all_day   INTEGER NOT NULL DEFAULT 0,
+    event_date   TEXT,
+    is_task      INTEGER NOT NULL DEFAULT 0,
+    is_completed INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY,
+    event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    remind_at  INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_start_at ON events(start_at);
+PRAGMA user_version = 1;
+`
+
+// makeLegacyDatabase writes a v0.1.0-shaped database and returns its path.
+func makeLegacyDatabase(t *testing.T, withEvent bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if withEvent {
+		_, err = db.Exec(
+			`INSERT INTO events (title, notes, start_at, end_at, is_task, is_completed, created_at, updated_at)
+			 VALUES ('来自旧版本', '旧备注', 1773205200, 1773208800, 1, 0, 1000, 1000)`)
+		if err != nil {
+			t.Fatalf("seed legacy event: %v", err)
+		}
+		_, err = db.Exec(`INSERT INTO reminders (event_id, remind_at, created_at) VALUES (1, 1773205000, 1000)`)
+		if err != nil {
+			t.Fatalf("seed legacy reminder: %v", err)
+		}
+	}
+	return path
+}
+
+func TestFreshDatabaseIsStampedWithTheCurrentFormat(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	version, err := st.FormatVersionOf(ctx)
+	if err != nil {
+		t.Fatalf("FormatVersionOf: %v", err)
+	}
+	if version != FormatVersion {
+		t.Errorf("format version = %d, want %d", version, FormatVersion)
+	}
+
+	// A fresh database must already have the location column, without needing
+	// the migration: creating and migrating have to agree.
+	ev, err := st.CreateEvent(ctx, modelEventWithLocation("有地点", "会议室 A"), nil)
+	if err != nil {
+		t.Fatalf("CreateEvent: %v", err)
+	}
+	if ev.Location == nil || *ev.Location != "会议室 A" {
+		t.Fatalf("location = %v, want 会议室 A", ev.Location)
+	}
+}
+
+func TestUpgradeFromV0Database(t *testing.T) {
+	ctx := context.Background()
+	path := makeLegacyDatabase(t, true)
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open legacy database: %v", err)
+	}
+	defer st.Close()
+
+	version, err := st.FormatVersionOf(ctx)
+	if err != nil {
+		t.Fatalf("FormatVersionOf: %v", err)
+	}
+	if version != FormatVersion {
+		t.Errorf("format version after upgrade = %d, want %d", version, FormatVersion)
+	}
+
+	// The column exists and existing rows kept their data.
+	ev, err := st.GetEvent(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetEvent after upgrade: %v", err)
+	}
+	if ev.Title != "来自旧版本" || ev.Notes == nil || *ev.Notes != "旧备注" {
+		t.Errorf("existing data changed during upgrade: %+v", ev)
+	}
+	if ev.Location != nil {
+		t.Errorf("location = %v, want nil for a row that predates the column", ev.Location)
+	}
+	if len(ev.Reminders) != 1 {
+		t.Errorf("reminders = %d, want the migrated row's reminder", len(ev.Reminders))
+	}
+
+	// And the new column is usable afterwards.
+	location := "新地点"
+	ev.Location = &location
+	updated, err := st.UpdateEvent(ctx, ev, nil, false)
+	if err != nil {
+		t.Fatalf("UpdateEvent after upgrade: %v", err)
+	}
+	if updated.Location == nil || *updated.Location != "新地点" {
+		t.Errorf("location after update = %v", updated.Location)
+	}
+}
+
+// Migrating twice must be a no-op: every start runs the check.
+func TestUpgradeIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	path := makeLegacyDatabase(t, true)
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		st, err := Open(ctx, path)
+		if err != nil {
+			t.Fatalf("Open attempt %d: %v", attempt, err)
+		}
+		version, err := st.FormatVersionOf(ctx)
+		if err != nil {
+			t.Fatalf("FormatVersionOf on attempt %d: %v", attempt, err)
+		}
+		if version != FormatVersion {
+			t.Errorf("attempt %d: format version = %d", attempt, version)
+		}
+		st.Close()
+	}
+}
+
+// A database written by a newer release must not be opened: an older binary
+// does not know what changed.
+func TestNewerDatabaseIsRefused(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "future.db")
+
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := st.writeFormatVersion(ctx, FormatVersion+1); err != nil {
+		t.Fatalf("writeFormatVersion: %v", err)
+	}
+	st.Close()
+
+	_, err = Open(ctx, path)
+	if err == nil {
+		t.Fatal("Open accepted a database from a newer release")
+	}
+	if !strings.Contains(err.Error(), "newer release") {
+		t.Errorf("error does not explain the problem: %v", err)
+	}
+}
+
+// Two or more majors behind is refused rather than chained: each step is only
+// tested against the release immediately before it.
+func TestJumpingMoreThanOneMajorIsRefused(t *testing.T) {
+	tests := []struct {
+		name    string
+		from    int
+		to      int
+		wantErr string
+	}{
+		{"adjacent is allowed", 0, 1, ""},
+		{"two majors is refused", 0, 2, "one major version at a time"},
+		{"three majors is refused", 1, 4, "one major version at a time"},
+		{"downgrade is refused", 2, 1, "newer than format"},
+		{"same version needs no step", 3, 3, ""},
+	}
+	steps := []step{{from: 0, to: 1, notes: "test"}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := planSteps(tc.from, tc.to, steps)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("planSteps(%d, %d) = %v, want no error", tc.from, tc.to, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("planSteps(%d, %d) succeeded, want an error", tc.from, tc.to)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+			if plan != nil {
+				t.Errorf("plan = %v, want nil alongside the error", plan)
+			}
+		})
+	}
+}
+
+// Every transition needs a step, even if the step does nothing: the registry is
+// what documents that the major version was considered.
+func TestMigrationRegistryCoversEveryTransition(t *testing.T) {
+	if len(migrations) != FormatVersion {
+		t.Fatalf("registry has %d entries but the format is %d: each major version needs one slot, empty if nothing changed",
+			len(migrations), FormatVersion)
+	}
+	for i, st := range migrations {
+		if st.from != i || st.to != i+1 {
+			t.Errorf("migrations[%d] covers %d->%d, want %d->%d", i, st.from, st.to, i, i+1)
+		}
+		if st.notes == "" {
+			t.Errorf("migrations[%d] has no notes describing what it does", i)
+		}
+	}
+}
+
+// Building the current schema from nothing and migrating an old database to it
+// must land on the same thing, otherwise one of the two paths is wrong.
+func TestMigratedSchemaMatchesFreshSchema(t *testing.T) {
+	ctx := context.Background()
+
+	fresh, err := Open(ctx, filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatalf("Open fresh: %v", err)
+	}
+	defer fresh.Close()
+
+	migrated, err := Open(ctx, makeLegacyDatabase(t, false))
+	if err != nil {
+		t.Fatalf("Open legacy: %v", err)
+	}
+	defer migrated.Close()
+
+	freshCols, err := columnNames(ctx, fresh)
+	if err != nil {
+		t.Fatalf("columns of fresh database: %v", err)
+	}
+	migratedCols, err := columnNames(ctx, migrated)
+	if err != nil {
+		t.Fatalf("columns of migrated database: %v", err)
+	}
+
+	if len(freshCols) != len(migratedCols) {
+		t.Fatalf("column counts differ:\n fresh    %v\n migrated %v", freshCols, migratedCols)
+	}
+	for i := range freshCols {
+		if freshCols[i] != migratedCols[i] {
+			t.Errorf("column %d differs: fresh %q, migrated %q", i, freshCols[i], migratedCols[i])
+		}
+	}
+}
+
+// columnNames lists every column as "table.name", in a stable order.
+func columnNames(ctx context.Context, st *Store) ([]string, error) {
+	rows, err := st.DB().QueryContext(ctx,
+		`SELECT m.name || '.' || p.name
+		   FROM sqlite_master AS m
+		   JOIN pragma_table_info(m.name) AS p
+		  WHERE m.type = 'table' AND m.name IN ('events', 'reminders', 'meta')
+		  ORDER BY m.name, p.cid`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// A file that is not a database at all must be reported clearly rather than
+// producing a confusing migration error.
+func TestUnreadableDatabaseIsReported(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "garbage.db")
+	if err := writeFile(path, "this is not a sqlite database"); err != nil {
+		t.Fatalf("write garbage file: %v", err)
+	}
+
+	_, err := Open(ctx, path)
+	if err == nil {
+		t.Fatal("Open accepted a file that is not a database")
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("error is not descriptive: %v", err)
+	}
+}
+
+// modelEventWithLocation builds a minimal event carrying a location.
+func modelEventWithLocation(title, location string) model.Event {
+	end := int64(1773208800)
+	return model.Event{
+		Title:     title,
+		Location:  &location,
+		StartAt:   1773205200,
+		EndAt:     &end,
+		CreatedAt: 1000,
+		UpdatedAt: 1000,
+	}
+}
+
+func writeFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
+}

@@ -1080,3 +1080,71 @@ func TestLimitBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// Location travels through the whole stack: create, read back, clear.
+func TestEventLocation(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	t.Run("round trips and is trimmed", func(t *testing.T) {
+		ev := h.create(`{"title":"会议","start_at":"2026-10-20T10:00","location":"  3 楼会议室  "}`)
+		if ev["location"] != "3 楼会议室" {
+			t.Errorf("location = %v, want it trimmed", ev["location"])
+		}
+		id := eventID(t, ev)
+
+		status, _, raw := h.do(http.MethodGet, fmt.Sprintf("/api/v1/events/%d", id), "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw)["location"]; got != "3 楼会议室" {
+			t.Errorf("location after reread = %v", got)
+		}
+	})
+
+	t.Run("absent on create means no location", func(t *testing.T) {
+		ev := h.create(`{"title":"无地点","start_at":"2026-10-20T10:00"}`)
+		if ev["location"] != nil {
+			t.Errorf("location = %v, want null", ev["location"])
+		}
+	})
+
+	t.Run("null and an empty string both clear it", func(t *testing.T) {
+		ev := h.create(`{"title":"可清空","start_at":"2026-10-20T10:00","location":"旧地点"}`)
+		path := fmt.Sprintf("/api/v1/events/%d", eventID(t, ev))
+
+		for _, body := range []string{`{"location":null}`, `{"location":"   "}`} {
+			status, _, raw := h.do(http.MethodPatch, path, body, nil)
+			if status != http.StatusOK {
+				t.Fatalf("PATCH %s status = %d; body: %s", body, status, raw)
+			}
+			if got := h.decode(raw)["location"]; got != nil {
+				t.Errorf("PATCH %s left location = %v, want null", body, got)
+			}
+		}
+	})
+
+	t.Run("an omitted field leaves it alone", func(t *testing.T) {
+		ev := h.create(`{"title":"保留","start_at":"2026-10-20T10:00","location":"保留我"}`)
+		path := fmt.Sprintf("/api/v1/events/%d", eventID(t, ev))
+
+		status, _, raw := h.do(http.MethodPatch, path, `{"title":"改了标题"}`, nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw)["location"]; got != "保留我" {
+			t.Errorf("location = %v, want it untouched", got)
+		}
+	})
+
+	t.Run("too long is rejected", func(t *testing.T) {
+		long := strings.Repeat("地", 501)
+		status, _, raw := h.do(http.MethodPost, "/api/v1/events",
+			fmt.Sprintf(`{"title":"太长","start_at":"2026-10-20T10:00","location":%q}`, long), nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400; body: %s", status, raw)
+		}
+		if fields := errorFields(t, h.decode(raw)); len(fields) == 0 || fields[0] != "location" {
+			t.Errorf("details fields = %v, want [location]", fields)
+		}
+	})
+}

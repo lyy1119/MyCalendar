@@ -109,6 +109,7 @@ type helpCode struct {
 type helpLimits struct {
 	TitleRunes        int    `json:"title_max_characters"`
 	NotesRunes        int    `json:"notes_max_characters"`
+	LocationRunes     int    `json:"location_max_characters"`
 	RemindersPerEvent int    `json:"reminders_per_event_max"`
 	SearchRunes       int    `json:"search_query_max_characters"`
 	MaxPageSize       int    `json:"limit_max"`
@@ -199,6 +200,7 @@ func (s *Server) buildHelp() helpDoc {
 					{Name: "id", Type: "INTEGER PRIMARY KEY", Description: "Server-assigned identifier. Never sent by clients."},
 					{Name: "title", Type: "TEXT NOT NULL", Description: "Event title, trimmed of surrounding whitespace.", Constraints: "1 to 500 characters"},
 					{Name: "notes", Type: "TEXT NULL", Description: "Free-form notes, up to 20000 characters. Send null to clear."},
+					{Name: "location", Type: "TEXT NULL", Description: "Where the event happens, up to 500 characters. Send null, or an empty string, to clear it."},
 					{Name: "start_at", Type: "INTEGER NOT NULL", Description: "Start instant, Unix seconds. For an all-day event this is the local midnight of event_date."},
 					{Name: "end_at", Type: "INTEGER NULL", Description: "Exclusive end instant, Unix seconds. Null means the event has no explicit end and is treated as a one-second instant when matching a window. For an all-day event this is the next local midnight."},
 					{Name: "is_all_day", Type: "INTEGER NOT NULL DEFAULT 0", Description: "1 for an all-day event, 0 for a timed event."},
@@ -426,6 +428,7 @@ func (s *Server) buildHelp() helpDoc {
 		BodyFields: []helpField{
 			{Name: "title", Type: "string", Required: "yes on POST", Nullable: "no", Description: "Event title."},
 			{Name: "notes", Type: "string", Required: "no", Nullable: "yes", Description: "Free-form notes. null clears them on PATCH."},
+			{Name: "location", Type: "string", Required: "no", Nullable: "yes", Description: "Where the event happens. Trimmed of surrounding whitespace; null or an empty string clears it, so an emptied box reads back as null rather than as an empty location."},
 			{Name: "start_at", Type: "integer or string", Required: "yes on POST for a timed event", Nullable: "no", Description: "Start instant, as Unix seconds or as a timestamp string (RFC3339 with an offset, or an offset-free local value read in tz). Stored as an absolute instant, so the timezone you send it in never changes what is stored. On an all-day event it is accepted only to derive the date."},
 			{Name: "end_at", Type: "integer or string", Required: "no", Nullable: "yes", Description: "Exclusive end instant, same encodings as start_at. null clears it, and the event then covers a single instant."},
 			{Name: "is_all_day", Type: "boolean", Required: "no", Default: "false", Description: "Marks the event as all-day. Inferred as true when a non-null event_date is sent."},
@@ -472,6 +475,7 @@ func (s *Server) buildHelp() helpDoc {
 		Limits: helpLimits{
 			TitleRunes:        titleMaxRunes,
 			NotesRunes:        notesMaxRunes,
+			LocationRunes:     locationMaxRunes,
 			RemindersPerEvent: remindersMax,
 			SearchRunes:       queryMaxRunes,
 			MaxPageSize:       pageSizeMax,
@@ -484,9 +488,9 @@ func (s *Server) buildHelp() helpDoc {
 				Description: "Only title and start_at are required. The response contains the server-assigned id.",
 				Request: "POST /api/v1/events?tz=Asia/Shanghai\n" +
 					"Content-Type: application/json\n\n" +
-					`{"title":"Dentist","start_at":1773205200,"end_at":1773208800,"notes":"Bring the insurance card"}`,
+					`{"title":"Dentist","start_at":1773205200,"end_at":1773208800,"notes":"Bring the insurance card","location":"Clinic, 2nd floor"}`,
 				Response: "201 Created\n" +
-					`{"id":1,"title":"Dentist","notes":"Bring the insurance card","start_at":1773205200,"end_at":1773208800,` +
+					`{"id":1,"title":"Dentist","notes":"Bring the insurance card","location":"Clinic, 2nd floor","start_at":1773205200,"end_at":1773208800,` +
 					`"is_all_day":false,"event_date":null,"is_task":false,"is_completed":false,` +
 					`"created_at":1773200000,"updated_at":1773200000,"reminders":[],` +
 					`"start_at_local":"2026-03-11T13:00:00+08:00","end_at_local":"2026-03-11T14:00:00+08:00"}`,
@@ -498,7 +502,7 @@ func (s *Server) buildHelp() helpDoc {
 					"Content-Type: application/json\n\n" +
 					`{"title":"Renew the domain","event_date":"2026-03-31","is_task":true,"reminders":[{"remind_at":1774886400}]}`,
 				Response: "201 Created\n" +
-					`{"id":2,"title":"Renew the domain","notes":null,"start_at":1774886400,"end_at":1774972800,` +
+					`{"id":2,"title":"Renew the domain","notes":null,"location":null,"start_at":1774886400,"end_at":1774972800,` +
 					`"is_all_day":true,"event_date":"2026-03-31","is_task":true,"is_completed":false,` +
 					`"created_at":1773200100,"updated_at":1773200100,` +
 					`"reminders":[{"id":1,"event_id":2,"remind_at":1774886400,"created_at":1773200100}],` +
@@ -563,11 +567,12 @@ func (s *Server) buildHelp() helpDoc {
 // Limits mirrored from the service layer, kept as plain ints so this document
 // cannot drift into a compile error if a constant is renamed.
 const (
-	titleMaxRunes = 500
-	notesMaxRunes = 20000
-	remindersMax  = 50
-	queryMaxRunes = 200
-	pageSizeMax   = 2000
+	titleMaxRunes    = 500
+	notesMaxRunes    = 20000
+	locationMaxRunes = 500
+	remindersMax     = 50
+	queryMaxRunes    = 200
+	pageSizeMax      = 2000
 )
 
 // renderHelpText writes the same reference as Markdown for humans and for
@@ -743,6 +748,7 @@ func renderHelpText(d helpDoc) string {
 	line("")
 	line("- title: at most %d characters", d.Limits.TitleRunes)
 	line("- notes: at most %d characters", d.Limits.NotesRunes)
+	line("- location: at most %d characters", d.Limits.LocationRunes)
 	line("- reminders per event: at most %d", d.Limits.RemindersPerEvent)
 	line("- `q`: at most %d characters", d.Limits.SearchRunes)
 	line("- `limit`: 0 to %d", d.Limits.MaxPageSize)

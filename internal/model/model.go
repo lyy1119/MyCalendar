@@ -50,6 +50,7 @@ type Event struct {
 	ID          int64      `json:"id"`
 	Title       string     `json:"title"`
 	Notes       *string    `json:"notes"`
+	Location    *string    `json:"location"`
 	StartAt     int64      `json:"start_at"`
 	EndAt       *int64     `json:"end_at"`
 	IsAllDay    bool       `json:"is_all_day"`
@@ -161,6 +162,7 @@ func NewReminderViews(reminders []Reminder, loc *time.Location) []ReminderView {
 type EventInput struct {
 	Title       Optional[string]          `json:"title"`
 	Notes       Optional[string]          `json:"notes"`
+	Location    Optional[string]          `json:"location"`
 	StartAt     FlexTime                  `json:"start_at"`
 	EndAt       FlexTime                  `json:"end_at"`
 	IsAllDay    Optional[bool]            `json:"is_all_day"`
