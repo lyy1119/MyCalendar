@@ -376,6 +376,73 @@ docker compose up -d --build
 | `MYCAL_WEEK_START` | `monday` | |
 | `MYCAL_LOG_LEVEL` | `info` | |
 
+### 数据库放到宿主机
+
+镜像里数据库固定在 `/data/mycalendar.db`（`MYCAL_DB` 的镜像默认值）。要把它落到宿主机，映射的是**目录 `/data`**，不是那个 `.db` 文件：
+
+```bash
+# 方式一：命名卷（compose 默认）。数据在 /var/lib/docker/volumes/<项目名>_mycalendar-data 下，
+# 由 Docker 管理，容器重建不丢，但平时不方便直接看到、拷贝。
+docker run -d --name mycalendar -p 8080:8080 \
+  -v mycalendar-data:/data mycalendar
+
+# 方式二：绑定挂载到宿主机目录（想直接看到文件就用这个）
+mkdir -p /srv/mycalendar
+docker run -d --name mycalendar -p 8080:8080 \
+  -v /srv/mycalendar:/data mycalendar
+# 之后数据库就在 /srv/mycalendar/mycalendar.db
+
+# SELinux 的宿主机（RHEL / Fedora / CentOS）要加 :Z，否则容器没有写权限
+docker run -d --name mycalendar -p 8080:8080 \
+  -v /srv/mycalendar:/data:Z mycalendar
+```
+
+compose 里改 `volumes:` 即可，文件内已写好注释，取消其中一行：
+
+```yaml
+    volumes:
+      # - mycalendar-data:/data      # 命名卷（默认）
+      - /srv/mycalendar:/data        # 绑定挂载
+```
+
+**为什么必须映射目录、不能只映射 `mycalendar.db` 这个文件**：SQLite 用的是 WAL 模式，会在数据库旁边额外维护 `mycalendar.db-wal` 与 `mycalendar.db-shm`。只把 `.db` 单文件挂进去，这两个伴生文件仍然写在容器内部，容器一重建就没了——**已经提交但还在 WAL 里的数据会一起丢**；数据库与其 WAL 分处不同文件系统本身也是隐患。所以宿主机目录里看到三个文件是正常的：
+
+```
+/srv/mycalendar/mycalendar.db
+/srv/mycalendar/mycalendar.db-wal
+/srv/mycalendar/mycalendar.db-shm
+```
+
+几点注意：
+
+- 容器以 root 运行（`/data` 需要在首次启动时创建），所以宿主机上生成的这些文件属主是 `root:root`。要用普通用户读写，需自行 `chown`，或预先建好目录并放宽权限。
+- 目录不存在时 Docker 会自动创建（属主 root），但建议先手动 `mkdir`，免得权限出乎意料。
+- **备份要在容器停止后做，且三个文件一起拷。** 热拷贝一个正在写的 WAL 数据库可能拿到撕裂状态；想在线备份用 `sqlite3 mycalendar.db ".backup backup.db"`。
+- 迁移到新机器：整个目录拷过去、路径保持一致即可。
+- 想改容器内的文件名可以覆盖 `MYCAL_DB=/data/cal.db`，但通常没必要；改宿主机侧位置请改上面的 `-v`。
+
+### `BUILD_VERSION` 是什么
+
+`docker-compose.yml` 里的 `VERSION: ${BUILD_VERSION:-compose}` 是一个**构建参数**，不是运行时配置：
+
+```
+docker-compose.yml 的 BUILD_VERSION
+  → Dockerfile 的 ARG VERSION（默认 docker）
+    → go build -ldflags "-X main.version=..."
+      → 二进制里的 version 字符串
+```
+
+它只影响启动日志以及 `/healthz`、`/api`、`/help` 报告的版本号，用来确认线上跑的是哪一次构建。**程序本身从不读取这个名字的环境变量**——运行时真正会读的只有 `MYCAL_ADDR`、`MYCAL_DB`、`MYCAL_TZ`、`MYCAL_WEEK_START`、`MYCAL_CORS_ORIGINS`、`MYCAL_LOG_LEVEL`、`MYCAL_TRUST_PROXY` 这七个。
+
+```bash
+BUILD_VERSION=1.2.3 docker compose up -d --build
+curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
+```
+
+不传则退回 `compose`（compose 构建）或 `docker`（直接 `docker build`）；本地 `make build` 是 `dev`。
+
+> 这里原本叫 `MYCAL_VERSION`，看着和运行时那组 `MYCAL_*` 像一家人，实际是构建期变量，容易误以为要写进 `environment:`。已改名。
+
 几个刻意的取舍：
 
 - **`CGO_ENABLED=0`**：scratch 里没有 libc，动态链接的二进制会因为找不到 ELF 解释器而直接启动失败。纯 Go 的 SQLite 驱动让这一点成为可能。

@@ -3,23 +3,52 @@
 #
 #   docker compose up -d --build
 #
-# The named volume keeps the calendar across rebuilds and restarts.
+# Where the database lives is the one thing worth thinking about here; see
+# "Database on the host" in the README. In short: mount the /data directory,
+# not the .db file.
 
 services:
   mycalendar:
     build:
       context: .
       args:
-        VERSION: ${MYCAL_VERSION:-compose}
+        # Stamped into the binary and reported by /healthz, /api and /help.
+        # It is a BUILD-time value, not something the server reads at runtime,
+        # which is why it is not named MYCAL_*. Set it inline:
+        #   BUILD_VERSION=1.2.3 docker compose up -d --build
+        VERSION: ${BUILD_VERSION:-compose}
     image: mycalendar:latest
     container_name: mycalendar
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
+      # Docker-managed named volume. Data survives restarts and rebuilds, and
+      # lives under /var/lib/docker/volumes/mycalendar-data.
       - mycalendar-data:/data
+
+      # --- OR bind-mount a host directory -------------------------------
+      # Comment out the line above and uncomment one of these to keep the
+      # database somewhere you can see, back up and copy directly.
+      #
+      # Mount the whole /data directory, never just mycalendar.db. SQLite runs
+      # in WAL mode, so it keeps mycalendar.db-wal and mycalendar.db-shm beside
+      # the database, and those must be on the same filesystem as it. Mounting
+      # only the file would strand the WAL inside the container, where it is
+      # lost when the container is recreated -- taking committed data with it.
+      #
+      # - /srv/mycalendar:/data
+      #
+      # On SELinux hosts (RHEL, Fedora, CentOS) append :Z so the container is
+      # allowed to write to the directory:
+      # - /srv/mycalendar:/data:Z
+      #
+      # A relative path also works and keeps everything inside the project:
+      # - ./data:/data
     environment:
       MYCAL_ADDR: ":8080"
+      # Inside the container the database always lives here; move the host side
+      # by changing the volume above rather than this path.
       MYCAL_DB: "/data/mycalendar.db"
       MYCAL_TZ: "${MYCAL_TZ:-Asia/Shanghai}"
       MYCAL_WEEK_START: "${MYCAL_WEEK_START:-monday}"
