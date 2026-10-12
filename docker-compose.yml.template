@@ -13,6 +13,26 @@
 
 services:
   mycalendar:
+    # Default: use the image CI publishes to ghcr.io.
+    #
+    # `missing` means: use the local copy if there is one, otherwise pull. Set
+    # `always` to re-check the registry on every start, or `never` to stay
+    # offline and rely on whatever is already local.
+    #
+    # The package starts out private, so pulling needs a login once (or make the
+    # package public under Package settings):
+    #   echo "$TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
+    image: ghcr.io/lyy1119/mycalendar:latest
+    pull_policy: missing
+
+    # Kept so that a pull which cannot succeed -- no registry access, not logged
+    # in, package still private -- can fall back to building locally:
+    #
+    #   make deploy               # try the pull, build if it fails
+    #   docker compose up -d --build   # build unconditionally
+    #
+    # Compose has no policy meaning "pull, and build if that fails", which is
+    # exactly why `make deploy` exists.
     build:
       context: .
       args:
@@ -36,18 +56,6 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
-
-        # To use the image published by CI instead of building at all, drop the
-        # build: block and use:
-        #   image: ghcr.io/lyy1119/mycalendar:latest
-        #   pull_policy: always
-    image: mycalendar:latest
-
-    # Without this, `docker compose up` looks up `mycalendar:latest` in Docker
-    # Hub before building, and fails with a pull error for a name that only ever
-    # exists locally. `build` means: never pull, always build. Change it to
-    # `always` when using the published ghcr image above.
-    pull_policy: build
 
     container_name: mycalendar
     restart: unless-stopped

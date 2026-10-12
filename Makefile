@@ -8,7 +8,7 @@ GO      ?= go
 BINARY  ?= mycalendar
 TAG     ?= webui_embedded
 
-.PHONY: help all build build-backend web web-install run dev test test-embed test-race vet fmt check clean
+.PHONY: help all build build-backend web web-install run dev deploy test test-embed test-race vet fmt check clean
 
 help:
 	@echo 'Targets:'
@@ -18,6 +18,7 @@ help:
 	@echo '  make web            build the frontend bundle only'
 	@echo '  make run            build and run'
 	@echo '  make dev            run the backend with the Vite dev server on top'
+	@echo '  make deploy         docker compose: pull the published image, or build if that fails'
 	@echo '  make check          vet, unit tests and a frontend typecheck'
 	@echo '  make clean          remove the binary and the generated bundle'
 
@@ -59,6 +60,35 @@ dev-backend: build-backend
 
 dev-web: web/node_modules
 	cd web && npm run dev
+
+# ------------------------------------------------------------------ deploy
+
+# Deploy with Docker, preferring the image CI published to ghcr.io and falling
+# back to a local build when the pull cannot succeed: no registry access, not
+# logged in, or the package still private.
+#
+# Compose cannot express this. Its pull_policy has no "pull, else build" value,
+# and a plain `docker compose up` just fails when the pull does -- which is the
+# error people hit. Hence a target rather than a one-liner in the compose file.
+#
+# The compose file itself is gitignored, so it is a prerequisite here purely to
+# produce a useful message when it has not been copied from the template yet.
+deploy: docker-compose.yml
+	@if docker compose pull --quiet; then \
+		echo 'using the published image'; \
+		docker compose up -d; \
+	else \
+		echo 'pull failed; building locally instead'; \
+		docker compose up -d --build; \
+	fi
+	@echo
+	@echo 'http://127.0.0.1:8080/' | sed 's|^|up at |'
+
+docker-compose.yml:
+	@echo 'error: docker-compose.yml does not exist.' >&2
+	@echo '       It is deliberately not committed; copy the template first:' >&2
+	@echo '         cp docker-compose.yml.template docker-compose.yml' >&2
+	@exit 1
 
 # ------------------------------------------------------------------ checks
 

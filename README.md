@@ -378,9 +378,27 @@ docker compose up -d --build
 ```bash
 cp docker-compose.yml.template docker-compose.yml
 ${EDITOR:-vi} docker-compose.yml   # 按需改宿主目录、时区、版本号
-docker compose up -d --build
-docker compose logs -f          # 看启动日志，确认生效的地址/数据库/时区
+
+make deploy        # 先拉取 CI 发布的镜像，拉不到就本地构建
+docker compose logs -f              # 看启动日志，确认生效的地址/数据库/时区
 ```
+
+**默认是从 ghcr 拉取已发布的镜像**（`pull_policy: missing`：本地有就用本地的，没有就拉）。首次拉取需要登录一次，因为 ghcr 的包默认私有：
+
+```bash
+echo "$TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
+# 或者把包改成公开：GitHub → 头像 → Packages → mycalendar → Package settings
+```
+
+**「拉取失败就本地构建」这件事 Compose 自己做不到。** 它的 `pull_policy` 只有 `always` / `never` / `missing` / `build` 四个值，没有「先拉、拉不到再构建」；直接 `docker compose up` 在拉取失败时就是报错退出——这正是你遇到的那个现象。所以这一步放在了 `make deploy` 里：
+
+```bash
+docker compose pull --quiet && docker compose up -d   # 拉到了就用镜像
+# 否则
+docker compose up -d --build                          # 拉不到就本地编译
+```
+
+模板里的 `build:` 段是为此保留的。如果你不想碰 registry，把 `pull_policy` 改成 `build` 即可完全本地构建；想每次都去 registry 确认最新，改成 `always`。
 
 **为什么是模板而不是直接给一份 `docker-compose.yml`**：部署相关的改动（数据库放哪个宿主目录、时区、版本号、端口）都是本机的事，不该进版本库，也不该在每次 `git pull` 时冲突。把模板入库、把实际文件忽略掉，`git pull` 就永远不用管它。
 
@@ -429,12 +447,7 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u lyy1119 --password-stdin
 ```
 
 
-用 compose 的话，把模板里的 `build:` 整段删掉，改成：
-
-```yaml
-    image: ghcr.io/lyy1119/mycalendar:latest
-    pull_policy: always      # 注意：本地构建时这里必须是 build
-```
+用 compose 的话什么都不用改：模板默认就是这个镜像加 `pull_policy: missing`。想强制每次都拉最新，把 `missing` 改成 `always`。
 
 只构建 amd64。要覆盖 Raspberry Pi 或 arm 的 NAS，在 workflow 的 `platforms:` 里加上 `linux/arm64` 即可——能work，只是 Go 编译会在模拟下跑，构建时间翻倍。
 
