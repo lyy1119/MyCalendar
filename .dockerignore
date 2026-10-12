@@ -1,0 +1,41 @@
+# Keep the build context to sources only. Anything generated locally must not
+# leak into the image, and excluding it also makes the context small enough for
+# the daemon to handle quickly.
+
+# Version control and editor noise
+.git
+.gitignore
+.github
+.idea
+.vscode
+
+# Frontend dependencies and build output: rebuilt inside the image
+web/node_modules
+web/e2e/node_modules
+web/e2e/package-lock.json
+web/e2e/*.png
+internal/webui/dist
+
+# Go build output and local databases. A database holds real calendar data and
+# has no business being copied into an image.
+mycalendar
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db3
+*.db3-wal
+*.db3-shm
+
+# Documentation and tooling that the image does not need
+README.md
+LICENSE
+Makefile
+Dockerfile
+.dockerignore
+docker-compose.yml

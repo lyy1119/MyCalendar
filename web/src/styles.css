@@ -8,10 +8,54 @@
  * happens by overriding those rather than fighting its selectors.
  */
 
-:root {
+/*
+ * Two palettes, selected by data-theme on the root element. The attribute is
+ * always set (see index.html and src/theme.ts), so the bare :root block is only
+ * a fallback for when scripting is unavailable.
+ *
+ * The dark values are sampled from the layout reference; the light ones follow
+ * Google Calendar's light theme so the two read as the same product.
+ */
+
+:root,
+:root[data-theme='light'] {
+  --mc-bg: #ffffff;
+  --mc-surface: #f8f9fa;
+  --mc-surface-2: #ffffff;
+  --mc-surface-hover: #f1f3f4;
+  --mc-border: #dadce0;
+  --mc-border-soft: #e8eaed;
+  --mc-text: #3c4043;
+  --mc-text-dim: #5f6368;
+  --mc-accent: #1a73e8;
+  --mc-accent-strong: #1967d2;
+  --mc-accent-contrast: #ffffff;
+  --mc-danger: #d93025;
+  --mc-hover: rgba(60, 64, 67, 0.08);
+  --mc-overlay: rgba(32, 33, 36, 0.5);
+  --mc-event-bg: #d2e3fc;
+  --mc-event-border: #1a73e8;
+  --mc-event-text: #174ea6;
+  --mc-task-bg: rgba(13, 148, 136, 0.16);
+  --mc-task-border: #0d9488;
+  --mc-task-text: #0f766e;
+  /* Finished work: bright green, deliberately faint so it recedes. */
+  --mc-done-bg: rgba(52, 211, 153, 0.24);
+  --mc-done-border: #34d399;
+  --mc-done-text: #0b7a52;
+  --mc-today-bg: rgba(26, 115, 232, 0.05);
+  --mc-now: #ea4335;
+  --mc-highlight: rgba(26, 115, 232, 0.14);
+  --mc-radius: 8px;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
   --mc-bg: #131314;
   --mc-surface: #1b1b1b;
   --mc-surface-2: #202124;
+  --mc-surface-hover: #2a2b2d;
   --mc-border: #333537;
   --mc-border-soft: #2a2b2d;
   --mc-text: #e3e3e3;
@@ -20,9 +64,20 @@
   --mc-accent-strong: #8ab4f8;
   --mc-accent-contrast: #062e6f;
   --mc-danger: #f28b82;
+  --mc-hover: rgba(255, 255, 255, 0.08);
+  --mc-overlay: rgba(0, 0, 0, 0.6);
   --mc-event-bg: rgba(168, 199, 250, 0.22);
   --mc-event-border: #a8c7fa;
   --mc-event-text: #d7e3fd;
+  --mc-task-bg: rgba(66, 154, 142, 0.24);
+  --mc-task-border: #429a8e;
+  --mc-task-text: #c8e6e1;
+  --mc-done-bg: rgba(52, 211, 153, 0.18);
+  --mc-done-border: #34d399;
+  --mc-done-text: #a7f3d0;
+  --mc-today-bg: rgba(168, 199, 250, 0.06);
+  --mc-now: #f28b82;
+  --mc-highlight: rgba(168, 199, 250, 0.18);
   --mc-radius: 8px;
 
   color-scheme: dark;
@@ -112,7 +167,7 @@ body {
 }
 
 .mc-new-btn:hover {
-  background: #2a2b2d;
+  background: var(--mc-surface-hover);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
@@ -182,10 +237,12 @@ body {
   border-color: transparent;
 }
 
+/* A rounded rectangle rather than a circle: at this cell size a circle reads
+   as a lopsided blob, and the rectangle matches the month grid. */
 .mc-mini .fc .fc-day-today {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--mc-accent);
-  border-radius: 50%;
+  border-radius: 6px;
 }
 
 .mc-mini .fc .fc-day-today .fc-daygrid-day-number {
@@ -251,7 +308,7 @@ body {
 .mc-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--mc-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -295,7 +352,7 @@ body {
 }
 
 .mc-icon-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--mc-hover);
   color: var(--mc-text);
 }
 
@@ -393,7 +450,7 @@ body {
 }
 
 .mc-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--mc-hover);
 }
 
 .mc-btn:disabled {
@@ -407,7 +464,7 @@ body {
 }
 
 .mc-btn--primary:hover:not(:disabled) {
-  background: #bcd3fb;
+  background: var(--mc-accent-strong);
 }
 
 .mc-btn--danger {
@@ -425,9 +482,9 @@ body {
   --fc-page-bg-color: var(--mc-bg);
   --fc-neutral-bg-color: var(--mc-surface);
   --fc-neutral-text-color: var(--mc-text-dim);
-  --fc-today-bg-color: rgba(168, 199, 250, 0.06);
-  --fc-now-indicator-color: #f28b82;
-  --fc-highlight-color: rgba(168, 199, 250, 0.18);
+  --fc-today-bg-color: var(--mc-today-bg);
+  --fc-now-indicator-color: var(--mc-now);
+  --fc-highlight-color: var(--mc-highlight);
   --fc-event-bg-color: var(--mc-event-bg);
   --fc-event-border-color: var(--mc-event-border);
   --fc-event-text-color: var(--mc-event-text);
@@ -540,19 +597,47 @@ body {
   border-radius: 4px;
 }
 
-/* Completed tasks are dimmed and struck through, as in the reference. */
-.fc .mc-done .fc-event-title {
-  text-decoration: line-through;
-  opacity: 0.7;
-}
-
 .fc .mc-task {
-  --fc-event-bg-color: rgba(66, 154, 142, 0.24);
-  --fc-event-border-color: #429a8e;
+  --fc-event-bg-color: var(--mc-task-bg);
+  --fc-event-border-color: var(--mc-task-border);
 }
 
 .fc .mc-task .fc-event-main {
-  color: #c8e6e1;
+  color: var(--mc-task-text);
+}
+
+/* A finished task is bright green at low opacity: legible, but clearly done
+   rather than demanding attention.
+ *
+ * This must come after .mc-task. A finished task carries both classes, both
+ * selectors have the same specificity, so source order alone decides -- putting
+ * it first leaves completed tasks wearing the ordinary task colour. */
+.fc .mc-done {
+  --fc-event-bg-color: var(--mc-done-bg);
+  --fc-event-border-color: var(--mc-done-border);
+}
+
+.fc .mc-done .fc-event-main {
+  color: var(--mc-done-text);
+}
+
+.fc .mc-done .fc-event-title {
+  text-decoration: line-through;
+  opacity: 0.85;
+}
+
+/* The right-hand scrollbar of the time grid is hidden: it sits against the
+   last day column and looks like part of the grid. Scrolling still works with
+   the wheel, trackpad, keyboard and touch. */
+.mc-calendar .fc-scroller {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.mc-calendar .fc-scroller::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 /* Keep the sticky header rows above the scrolling body. */
@@ -618,6 +703,53 @@ body {
 }
 
 .mc-chip:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--mc-hover);
   color: var(--mc-text);
+}
+
+/* ---------------------------------------------------------------- theme */
+
+.mc-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mc-border-soft);
+}
+
+.mc-theme__label {
+  font-size: 12px;
+  color: var(--mc-text-dim);
+}
+
+.mc-segmented {
+  display: flex;
+  border: 1px solid var(--mc-border);
+  border-radius: 15px;
+  overflow: hidden;
+}
+
+.mc-segmented__item {
+  flex: 1;
+  height: 28px;
+  border: none;
+  background: none;
+  color: var(--mc-text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mc-segmented__item:hover {
+  background: var(--mc-hover);
+  color: var(--mc-text);
+}
+
+.mc-segmented__item.is-active {
+  background: var(--mc-accent);
+  color: var(--mc-accent-contrast);
+}
+
+.mc-theme__hint {
+  margin-left: 6px;
 }

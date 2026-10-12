@@ -409,6 +409,56 @@ try {
   const labelToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check('today returns to the current window', labelToday === labelBefore, `${labelToday} vs ${labelBefore}`)
 
+  // ------------------------------------------------------------ appearance
+
+  {
+    const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+
+    // Headless reports prefers-color-scheme: light, so pin dark first and then
+    // light; comparing 'auto' against a pinned mode would compare light to light.
+    await page.getByRole('button', { name: '暗色' }).click()
+    await page.waitForTimeout(250)
+    const darkBg = await bg()
+    await page.getByRole('button', { name: '亮色' }).click()
+    await page.waitForTimeout(250)
+    const lightBg = await bg()
+    check('the appearance switcher pins light and dark', darkBg === 'rgb(19, 19, 20)' && lightBg === 'rgb(255, 255, 255)', `${darkBg} / ${lightBg}`)
+
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForSelector('.mc-sidebar', { timeout: 15000 })
+    check('the theme choice survives a reload', (await bg()) === 'rgb(255, 255, 255)', await bg())
+
+    await page.getByRole('button', { name: '自动' }).click()
+    await page.waitForTimeout(250)
+    const autoTheme = await page.evaluate(() => document.documentElement.dataset.theme)
+    const systemDark = await page.evaluate(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
+    check('auto follows the system', autoTheme === (systemDark ? 'dark' : 'light'), `theme=${autoTheme} systemDark=${systemDark}`)
+
+    // The appearance control lives under the sidebar notes, as requested.
+    check(
+      'the appearance control sits under the notes',
+      await page.evaluate(() => {
+        const facts = document.querySelector('.mc-sidebar .mc-facts')
+        const theme = document.querySelector('.mc-sidebar .mc-theme')
+        return Boolean(facts && theme && facts.compareDocumentPosition(theme) & Node.DOCUMENT_POSITION_FOLLOWING)
+      }),
+    )
+
+    const todayCell = await page.evaluate(() => {
+      const cell = document.querySelector('.mc-mini .fc-day-today')
+      return cell ? getComputedStyle(cell).borderTopLeftRadius : null
+    })
+    check('today is a rounded rectangle, not a circle', todayCell === '6px', `border-radius=${todayCell}`)
+
+    const bars = await page.evaluate(() => {
+      const grid = document.querySelector('.mc-calendar .fc-scroller-liquid-absolute')
+      return grid
+        ? { width: getComputedStyle(grid).scrollbarWidth, gap: grid.offsetWidth - grid.clientWidth }
+        : null
+    })
+    check('the time grid scrollbar is hidden', bars?.width === 'none' && bars?.gap === 0, `width=${bars?.width} gap=${bars?.gap}`)
+  }
+
   check('no console errors during the whole run', consoleErrors.length === 0, consoleErrors.join(' | '))
 
   await page.screenshot({ path: 'calendar.png' })

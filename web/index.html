@@ -3,13 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
     <!-- Inlined so the app makes no extra request for it. -->
     <link
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='3' y='6' width='26' height='23' rx='4' fill='none' stroke='%23a8c7fa' stroke-width='2.5'/><path d='M3 13h26' stroke='%23a8c7fa' stroke-width='2.5'/><path d='M10 3v6M22 3v6' stroke='%23a8c7fa' stroke-width='2.5' stroke-linecap='round'/></svg>"
     />
     <title>MyCalendar</title>
+    <script>
+      // Resolve the theme before the first paint, otherwise a reload flashes
+      // the default palette before React has mounted. Kept in step with
+      // src/theme.ts; run synchronously so it cannot be too late.
+      (function () {
+        var theme = 'light'
+        try {
+          var stored = window.localStorage.getItem('mycalendar.theme')
+          if (stored === 'light' || stored === 'dark') {
+            theme = stored
+          } else {
+            theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          }
+        } catch (error) {
+          theme = 'dark'
+        }
+        document.documentElement.setAttribute('data-theme', theme)
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

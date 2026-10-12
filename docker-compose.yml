@@ -1,0 +1,37 @@
+# Convenience wrapper for the Dockerfile. Optional: `docker build` and
+# `docker run` on their own are enough, see the README.
+#
+#   docker compose up -d --build
+#
+# The named volume keeps the calendar across rebuilds and restarts.
+
+services:
+  mycalendar:
+    build:
+      context: .
+      args:
+        VERSION: ${MYCAL_VERSION:-compose}
+    image: mycalendar:latest
+    container_name: mycalendar
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - mycalendar-data:/data
+    environment:
+      MYCAL_ADDR: ":8080"
+      MYCAL_DB: "/data/mycalendar.db"
+      MYCAL_TZ: "${MYCAL_TZ:-Asia/Shanghai}"
+      MYCAL_WEEK_START: "${MYCAL_WEEK_START:-monday}"
+      MYCAL_LOG_LEVEL: "${MYCAL_LOG_LEVEL:-info}"
+      # This service has no authentication. Keep it on a trusted network, and
+      # narrow this if a browser front end is ever served from elsewhere.
+      MYCAL_CORS_ORIGINS: "${MYCAL_CORS_ORIGINS:-*}"
+    # The image has no shell, so a healthcheck must invoke the binary itself.
+    # It cannot curl; check from the host instead:
+    #   curl -fsS http://127.0.0.1:8080/healthz
+    healthcheck:
+      disable: true
+
+volumes:
+  mycalendar-data:
