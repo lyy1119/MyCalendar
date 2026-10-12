@@ -360,13 +360,41 @@ docker build -t mycalendar .
 # 运行（数据放在命名卷里，重建容器不丢）
 docker run -d --name mycalendar -p 8080:8080 -v mycalendar-data:/data mycalendar
 
-# 或者用 compose
+# 或者用 compose：先从模板复制一份，见下
+cp docker-compose.yml.template docker-compose.yml
 docker compose up -d --build
 ```
 
 打开 <http://127.0.0.1:8080/>。
 
-镜像内置的默认值（都可用 `-e` 覆盖）：
+### 用 compose 部署
+
+仓库里只版本化**模板** `docker-compose.yml.template`，真正的 `docker-compose.yml` 在 `.gitignore` 里。所以先复制一份再改：
+
+```bash
+cp docker-compose.yml.template docker-compose.yml
+${EDITOR:-vi} docker-compose.yml   # 按需改宿主目录、时区、版本号
+docker compose up -d --build
+docker compose logs -f          # 看启动日志，确认生效的地址/数据库/时区
+```
+
+**为什么是模板而不是直接给一份 `docker-compose.yml`**：部署相关的改动（数据库放哪个宿主目录、时区、版本号、端口）都是本机的事，不该进版本库，也不该在每次 `git pull` 时冲突。把模板入库、把实际文件忽略掉，`git pull` 就永远不用管它。
+
+模板里几处常用的改动点都写了注释：
+
+| 想改什么 | 改模板里的哪一段 |
+|---|---|
+| 数据库落到宿主机目录 | `volumes:` 里换成绑定挂载那一行（见下一节） |
+| 端口 | `ports:` |
+| 时区 | `MYCAL_TZ`（镜像默认已是 `Asia/Shanghai`） |
+| 版本号 | `build.args.VERSION`，或构建时传 `BUILD_VERSION=`（见后） |
+| 跨域来源 | `MYCAL_CORS_ORIGINS`，默认 `*`；本服务无鉴权，谨慎放宽 |
+
+`.gitignore` 忽略 `docker-compose.yml` 还有个附带好处：万一你把宿主路径、内网地址甚至口令写进了 `environment:`，也不会被 `git add` 带上去。
+
+### 镜像内置的默认值
+
+以下默认值都写在 Dockerfile 里，可用 `-e` 或 compose 的 `environment:` 覆盖：
 
 | 变量 | 镜像默认值 | 说明 |
 |---|---|---|
@@ -397,7 +425,7 @@ docker run -d --name mycalendar -p 8080:8080 \
   -v /srv/mycalendar:/data:Z mycalendar
 ```
 
-compose 里改 `volumes:` 即可，文件内已写好注释，取消其中一行：
+用 compose 的话改你复制出来的 `docker-compose.yml` 里的 `volumes:` 即可，模板里两种写法都写好了，取消其中一行：
 
 ```yaml
     volumes:
@@ -423,7 +451,7 @@ compose 里改 `volumes:` 即可，文件内已写好注释，取消其中一行
 
 ### `BUILD_VERSION` 是什么
 
-`docker-compose.yml` 里的 `VERSION: ${BUILD_VERSION:-compose}` 是一个**构建参数**，不是运行时配置：
+`docker-compose.yml.template`（即你复制出来的 `docker-compose.yml`）里的 `VERSION: ${BUILD_VERSION:-compose}` 是一个**构建参数**，不是运行时配置：
 
 ```
 docker-compose.yml 的 BUILD_VERSION
@@ -435,8 +463,11 @@ docker-compose.yml 的 BUILD_VERSION
 它只影响启动日志以及 `/healthz`、`/api`、`/help` 报告的版本号，用来确认线上跑的是哪一次构建。**程序本身从不读取这个名字的环境变量**——运行时真正会读的只有 `MYCAL_ADDR`、`MYCAL_DB`、`MYCAL_TZ`、`MYCAL_WEEK_START`、`MYCAL_CORS_ORIGINS`、`MYCAL_LOG_LEVEL`、`MYCAL_TRUST_PROXY` 这七个。
 
 ```bash
+# 先确保已经复制过模板（见「用 compose 部署」）
 BUILD_VERSION=1.2.3 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
+
+# 不想每次传，也可以改 docker-compose.yml 里的 build.args.VERSION
 ```
 
 不传则退回 `compose`（compose 构建）或 `docker`（直接 `docker build`）；本地 `make build` 是 `dev`。
