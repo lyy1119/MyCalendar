@@ -848,9 +848,10 @@ body {
  * container query cannot restyle its own container, only its descendants, and
  * the main element is the one with a height resolved by FullCalendar's layout.
  *
- * One line has to carry both facts, so the markup -- title, then time -- is
- * reversed and a comma inserted. The time keeps its full width and the title
- * absorbs the clipping.
+ * One line carries both facts, separated by a comma and still title first. The
+ * title is sized to shrink rather than grow: growing would push the comma away
+ * from the title it belongs to and strand it next to the time. The time keeps
+ * its full width; the title absorbs the clipping.
  */
 .fc-timegrid-event .fc-event-main {
   container-type: size;
@@ -858,13 +859,14 @@ body {
 
 @container (max-height: 30px) {
   .mc-chip {
-    flex-direction: row-reverse;
+    flex-direction: row;
     align-items: baseline;
-    gap: 0;
+    gap: 4px;
   }
 
+  /* Shrink to fit, never grow. */
   .mc-chip .fc-event-title {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     font-weight: 500;
   }
 
@@ -872,9 +874,11 @@ body {
     flex: 0 0 auto;
   }
 
-  /* Visually between the time and the title, since the row is reversed. */
-  .mc-chip .fc-event-time::after {
+  /* Before the time, which is where the title it follows ends. On the title's
+     own ::after the comma would be clipped away with the text it trails. */
+  .mc-chip .fc-event-time::before {
     content: ',';
+    margin-right: 4px;
   }
 
   /* No room for a second line, let alone a third. */

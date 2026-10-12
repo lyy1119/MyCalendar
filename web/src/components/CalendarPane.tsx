@@ -18,12 +18,13 @@ import { WEEKDAY_SHORT } from '../time'
  * FullCalendar derives from the event's duration:
  *
  *   room for two lines   title, then the time underneath, then location, notes
- *   one line only        "13:00 - 14:00, title"
+ *   one line only        "title, 13:00 - 14:00"
  *
- * The single-line form puts the time first and lets only the title be clipped:
- * a truncated time is worse than useless, whereas a clipped title is still
- * recognisable. Both arrangements come from the same markup -- title before
- * time, and the row direction reversed when space is short -- so no text is
+ * The title leads in both, because it is what identifies the event. On a single
+ * line the title is the part allowed to be clipped -- a truncated time is worse
+ * than useless, whereas a clipped title is still recognisable -- so the time
+ * takes its full width and the title yields. One markup serves both
+ * arrangements, with only the direction and a separator changed, so no text is
  * rendered twice for screen readers or text selection to trip over.
  */
 function eventChip(arg: EventContentArg) {

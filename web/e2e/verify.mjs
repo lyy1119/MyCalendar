@@ -500,7 +500,9 @@ try {
         blockH: Math.round(ev.getBoundingClientRect().height),
         time: rect(time),
         title: rect(title),
-        comma: getComputedStyle(time, '::after').content,
+        // The separator sits before the time element, not after it: attached to
+        // the title it would be clipped away along with the title's text.
+        comma: getComputedStyle(time, '::before').content,
         timeClipped: time.scrollWidth > time.clientWidth + 1,
         titleClipped: title.scrollWidth > title.clientWidth + 1,
         extras: [...ev.querySelectorAll('.mc-chip__line')].filter((e) => getComputedStyle(e).display !== 'none').length,
@@ -508,7 +510,9 @@ try {
     })
     check('a short block fits on one line', shortBlock !== null && shortBlock.blockH <= 26, `blockH=${shortBlock?.blockH}`)
     check('its time and title share that line', Math.abs((shortBlock?.time.y ?? 0) - (shortBlock?.title.y ?? 99)) < 8)
-    check('its time is written before the title', (shortBlock?.time.x ?? 99) < (shortBlock?.title.x ?? 0), `timeX=${Math.round(shortBlock?.time.x ?? -1)} titleX=${Math.round(shortBlock?.title.x ?? -1)}`)
+    // The title leads here too: it identifies the event, so it should not be
+    // the thing pushed aside on a cramped block.
+    check('its title is written before the time', (shortBlock?.title.x ?? 99) < (shortBlock?.time.x ?? 0), `titleX=${Math.round(shortBlock?.title.x ?? -1)} timeX=${Math.round(shortBlock?.time.x ?? -1)}`)
     check('they are separated by a comma', shortBlock?.comma === '","', String(shortBlock?.comma))
     check('the time is still shown in full', shortBlock?.timeClipped === false)
     check('location and notes are dropped when there is no room', shortBlock?.extras === 0, `visible=${shortBlock?.extras}`)
