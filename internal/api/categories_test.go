@@ -55,8 +55,8 @@ func TestSeedCategories(t *testing.T) {
 	if !ok {
 		t.Fatal("the uncategorized category (0) is missing")
 	}
-	if uncategorized["name"] != "未分类" || uncategorized["color"] != "#ffffff" {
-		t.Errorf("category 0 = %v, want 未分类/#ffffff", uncategorized)
+	if uncategorized["name"] != "默认" || uncategorized["color"] != "#1a73e8" {
+		t.Errorf("category 0 = %v, want 默认/#1a73e8", uncategorized)
 	}
 }
 
@@ -145,8 +145,60 @@ func TestCategoryCRUD(t *testing.T) {
 	})
 }
 
+// -1 is a state the API names rather than a grouping the user chose, so its
+// name is fixed; its colour -- and everything about category 0 -- stays
+// editable.
+func TestBuiltInCategoryNames(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	// Renaming -1 is refused, and the refusal names the reason.
+	status, _, raw := h.do(http.MethodPatch, "/api/v1/categories/-1", `{"name":"垃圾箱"}`, nil)
+	if status != http.StatusConflict {
+		t.Fatalf("PATCH -1 name status = %d, want 409; body: %s", status, raw)
+	}
+	if code := errorCode(t, h.decode(raw)); code != "category_name_fixed" {
+		t.Errorf("error code = %q, want category_name_fixed", code)
+	}
+
+	// Sending the name it already has is not a rename, so it goes through and
+	// leaves the row alone.
+	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/-1", `{"name":"删除"}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH -1 with the same name = %d, want 200; body: %s", status, raw)
+	}
+	if got := h.decode(raw); got["name"] != "删除" {
+		t.Errorf("name = %v", got["name"])
+	}
+
+	// The colour of -1 changes freely.
+	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/-1", `{"color":"#cc4444"}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH -1 colour status = %d, want 200; body: %s", status, raw)
+	}
+	if got := h.decode(raw); got["color"] != "#cc4444" || got["name"] != "删除" {
+		t.Errorf("category -1 after recolour = %v, want #cc4444 with the name unchanged", got)
+	}
+
+	// Category 0 can be renamed: it is just the default grouping.
+	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/0", `{"name":"个人"}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH 0 name status = %d, want 200; body: %s", status, raw)
+	}
+	if got := h.decode(raw); got["name"] != "个人" {
+		t.Errorf("name = %v, want 个人", got["name"])
+	}
+
+	// A user category is unaffected by any of this.
+	created := h.decode(mustDo(t, h, http.MethodPost, "/api/v1/categories",
+		`{"name":"工作","color":"#4a90e2"}`))
+	id := fmt.Sprintf("%v", created["id"])
+	if status, _, _ := h.do(http.MethodPatch, "/api/v1/categories/"+id, `{"name":"私事"}`, nil); status != http.StatusOK {
+		t.Errorf("renaming a user category status = %d, want 200", status)
+	}
+}
+
 // The two system categories are part of the API's contract, so they cannot be
-// deleted; user categories can, and their events fall back to uncategorized.
+// deleted; user categories can, and their events fall back to the default one.
 func TestCategoryDelete(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 

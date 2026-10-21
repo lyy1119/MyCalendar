@@ -60,6 +60,13 @@ interface Props {
   events: ApiEvent[]
   /** Needed to colour each event by its category. */
   categories: ApiCategory[]
+  /**
+   * Locked means existing events can be read but not changed: clicking one
+   * opens a read-only view, and creating by dragging is off. Creating from the
+   * sidebar button is never gated -- that is the one thing the lock leaves
+   * available.
+   */
+  readOnly: boolean
   calendarRef: RefObject<FullCalendar | null>
   onDatesSet: (arg: DatesSetArg) => void
   onEventClick: (arg: EventClickArg) => void
@@ -79,6 +86,7 @@ interface Props {
 export function CalendarPane({
   events,
   categories,
+  readOnly,
   calendarRef,
   onDatesSet,
   onEventClick,
@@ -134,7 +142,7 @@ export function CalendarPane({
       scrollTime="07:00:00"
       // Selection is for creating; dragging to reschedule is deliberately off,
       // since editing goes through the dialog.
-      selectable
+      selectable={!readOnly}
       selectMirror
       editable={false}
       events={calendarEvents}

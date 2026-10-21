@@ -81,16 +81,12 @@ export function draftStart(draft: EventDraft): Date | null {
   return draft.isAllDay ? parseDateOnly(draft.eventDate) : parseDateTimeLocal(draft.start)
 }
 
-/**
- * Picks black or white text for a background colour, by luminance.
- *
- * The category colours are chosen by the user, so they can be anything from
- * near-white to near-black; picking the text colour blindly would make half of
- * them unreadable.
- */
-export function readableTextOn(hex: string): string {
+const INK = '#1f1f1f'
+
+/** Splits #rgb or #rrggbb into three 0-255 channels, or null when unparseable. */
+function channels(hex: string): [number, number, number] | null {
   const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
-  if (!match) return '#ffffff'
+  if (!match) return null
   let digits = match[1]
   if (digits.length === 3) {
     digits = digits
@@ -98,13 +94,85 @@ export function readableTextOn(hex: string): string {
       .map((c) => c + c)
       .join('')
   }
-  const channel = (i: number) => parseInt(digits.slice(i * 2, i * 2 + 2), 16) / 255
-  const [r, g, b] = [channel(0), channel(1), channel(2)].map((v) =>
-    v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4,
+  return [
+    parseInt(digits.slice(0, 2), 16),
+    parseInt(digits.slice(2, 4), 16),
+    parseInt(digits.slice(4, 6), 16),
+  ]
+}
+
+/** Rec. 709 relative luminance, the basis of the WCAG contrast ratio. */
+function luminance(hex: string): number | null {
+  const rgb = channels(hex)
+  if (!rgb) return null
+  const [r, g, b] = rgb.map((value) => {
+    const v = value / 255
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/** WCAG contrast ratio between two opaque colours, 1 (same) to 21 (black/white). */
+export function contrastRatio(a: string, b: string): number {
+  const la = luminance(a)
+  const lb = luminance(b)
+  if (la === null || lb === null) return 1
+  const [hi, lo] = la > lb ? [la, lb] : [lb, la]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * Picks white or near-black text for a background colour, whichever actually
+ * contrasts more.
+ *
+ * The category colours are chosen by the user, so they can be anything from
+ * near-white to near-black. A luminance threshold ("light background, dark
+ * text") is a guess; comparing the two real contrast ratios is not, and it
+ * puts a mid blue such as #1a73e8 on white text (4.5:1) rather than a dim
+ * 3.2:1.
+ */
+export function readableTextOn(hex: string): string {
+  const white = contrastRatio(hex, '#ffffff')
+  const ink = contrastRatio(hex, INK)
+  return ink > white ? INK : '#ffffff'
+}
+
+/**
+ * Moves a colour towards black (amount < 0) or white (amount > 0).
+ *
+ * Used for the event border: a fill alone leaves a very light category (white,
+ * pale yellow) indistinguishable from the calendar background in the light
+ * theme, and a very dark one (near-black) invisible in the dark theme. A border
+ * that is slightly darker than the fill gives every colour an edge in both
+ * themes without changing what colour the block reads as.
+ */
+export function shadeColor(hex: string, amount: number): string {
+  const rgb = channels(hex)
+  if (!rgb) return hex
+  const target = amount < 0 ? 0 : 255
+  const ratio = Math.min(Math.abs(amount), 1)
+  return (
+    '#' +
+    rgb
+      .map((value) => Math.round(value + (target - value) * ratio))
+      .map((value) => value.toString(16).padStart(2, '0'))
+      .join('')
   )
-  // Rec. 709 relative luminance.
-  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-  return luminance > 0.45 ? '#202124' : '#ffffff'
+}
+
+/**
+ * The border for a filled event block.
+ *
+ * A fill alone leaves a very light category (white, pale yellow) lost against
+ * the light theme's white page and a very dark one lost against the dark
+ * theme's near-black page. The border therefore moves *away* from the fill --
+ * lighter for dark fills, darker for light ones -- so every colour keeps an
+ * edge in both themes without changing what colour the block reads as.
+ */
+function borderOn(hex: string): string {
+  const l = luminance(hex)
+  if (l === null) return hex
+  return shadeColor(hex, l < 0.2 ? 0.3 : -0.22)
 }
 
 /** The background, border and text colours for an event, if any. */
@@ -116,7 +184,7 @@ function eventColors(event: ApiEvent, categories: Map<number, ApiCategory>) {
   if (!color) return {}
   return {
     backgroundColor: color,
-    borderColor: color,
+    borderColor: borderOn(color),
     textColor: readableTextOn(color),
   }
 }

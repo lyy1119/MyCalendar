@@ -59,6 +59,8 @@ internal/webui/dist/
 
 # Screenshot produced by the optional browser verification.
 web/e2e/calendar.png
+# A crashed headless browser can drop a core file here.
+web/e2e/core
 
 # Editor/IDE
 # .idea/

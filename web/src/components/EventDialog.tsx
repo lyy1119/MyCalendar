@@ -20,6 +20,13 @@ import { BROWSER_TZ, toDateTimeLocal } from '../time'
 interface Props {
   draft: EventDraft
   categories: ApiCategory[]
+  /**
+   * Show the event without allowing changes. The fields are disabled rather
+   * than hidden, so the content is still readable; the footer drops the save,
+   * delete and remove actions and offers to unlock editing instead.
+   */
+  readOnly: boolean
+  onRequestUnlock?: () => void
   onClose: () => void
   onSaved: (message: string) => void
 }
@@ -31,7 +38,14 @@ interface Props {
  * The server owns all the normalisation rules, so this form only has to send
  * the fields the user actually changed.
  */
-export function EventDialog({ draft: initialDraft, categories, onClose, onSaved }: Props) {
+export function EventDialog({
+  draft: initialDraft,
+  categories,
+  readOnly,
+  onRequestUnlock,
+  onClose,
+  onSaved,
+}: Props) {
   const [draft, setDraft] = useState<EventDraft>(initialDraft)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -109,6 +123,7 @@ export function EventDialog({ draft: initialDraft, categories, onClose, onSaved 
   // "Remove" is the destructive one, and it is only offered on an event that
   // has already been deleted, so it cannot be reached by accident.
   const isDeleted = draft.categoryID === CATEGORY_DELETED
+  const selectedCategory = categories.find((c) => c.id === draft.categoryID)
 
   const handleDelete = async () => {
     if (isNew) return
@@ -155,9 +170,14 @@ export function EventDialog({ draft: initialDraft, categories, onClose, onSaved 
         if (e.target === e.currentTarget && !busy) onClose()
       }}
     >
-      <div className="mc-dialog" role="dialog" aria-modal="true" aria-label={isNew ? '新建日程' : '编辑日程'}>
+      <div
+        className="mc-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={isNew ? '新建日程' : readOnly ? '日程详情' : '编辑日程'}
+      >
         <header className="mc-dialog__head">
-          <h2>{isNew ? '新建日程' : '编辑日程'}</h2>
+          <h2>{isNew ? '新建日程' : readOnly ? '日程详情' : '编辑日程'}</h2>
           <button type="button" className="mc-icon-btn" onClick={onClose} disabled={busy} aria-label="关闭">
             ✕
           </button>
@@ -167,9 +187,12 @@ export function EventDialog({ draft: initialDraft, categories, onClose, onSaved 
           className="mc-dialog__body"
           onSubmit={(e) => {
             e.preventDefault()
-            void handleSave()
+            if (!readOnly) void handleSave()
           }}
         >
+          {/* One fieldset switch turns every control inside it read-only,
+              including the checkboxes and the reminder buttons. */}
+          <fieldset className="mc-fields" disabled={readOnly}>
           <label className="mc-field">
             <span className="mc-field__label">标题</span>
             <input
@@ -184,20 +207,29 @@ export function EventDialog({ draft: initialDraft, categories, onClose, onSaved 
 
           <label className="mc-field">
             <span className="mc-field__label">分类</span>
-            <select
-              className="mc-input"
-              value={draft.categoryID}
-              onChange={(e) => patch({ categoryID: Number(e.target.value) })}
-            >
-              {/* A deleted event keeps its -1 so opening it does not silently
-                  bring it back; the option only appears in that case. */}
-              {draft.categoryID === CATEGORY_DELETED && <option value={CATEGORY_DELETED}>已删除</option>}
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            <div className="mc-cat-field">
+              {/* The swatch is the point of the picker: it shows the colour the
+                  event will have on the grid, which the name alone does not. */}
+              <span
+                className="mc-cat-field__dot"
+                style={{ backgroundColor: selectedCategory?.color ?? 'var(--mc-text-dim)' }}
+                aria-hidden="true"
+              />
+              <select
+                className="mc-input"
+                value={draft.categoryID}
+                onChange={(e) => patch({ categoryID: Number(e.target.value) })}
+              >
+                {/* A deleted event keeps its -1 so opening it does not silently
+                    bring it back; the option only appears in that case. */}
+                {draft.categoryID === CATEGORY_DELETED && <option value={CATEGORY_DELETED}>已删除</option>}
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </label>
 
           <label className="mc-field mc-field--inline">
@@ -329,8 +361,24 @@ export function EventDialog({ draft: initialDraft, categories, onClose, onSaved 
           )}
 
           {error && <p className="mc-error" role="alert">{error}</p>}
+          </fieldset>
 
           <footer className="mc-dialog__foot">
+            {readOnly ? (
+              <>
+                <span className="mc-hint">编辑已锁定，开启后即可修改</span>
+                <div className="mc-dialog__spacer" />
+                <button type="button" className="mc-btn" onClick={onClose}>
+                  关闭
+                </button>
+                {onRequestUnlock && (
+                  <button type="button" className="mc-btn mc-btn--primary" onClick={onRequestUnlock}>
+                    开启修改
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
             {!isNew && (
               <button type="button" className="mc-btn mc-btn--danger" onClick={() => void handleDelete()} disabled={busy}>
                 删除
@@ -348,6 +396,8 @@ export function EventDialog({ draft: initialDraft, categories, onClose, onSaved 
             <button type="submit" className="mc-btn mc-btn--primary" disabled={busy}>
               {busy ? '保存中…' : '保存'}
             </button>
+              </>
+            )}
           </footer>
         </form>
       </div>

@@ -124,6 +124,7 @@ body {
 }
 
 .mc-main {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
@@ -139,6 +140,22 @@ body {
   border-radius: var(--mc-radius);
   overflow: hidden;
   background: var(--mc-bg);
+}
+
+/* Locked: the grid is a reading surface. Selected and hover affordances that
+   suggest "drag here to create" are turned off, so the lock is visible rather
+   than something you discover by trying. */
+.mc-calendar[data-readonly='true'] .fc .fc-timegrid-slot,
+.mc-calendar[data-readonly='true'] .fc .fc-daygrid-day {
+  cursor: default;
+}
+
+.mc-calendar[data-readonly='true'] .fc .fc-highlight {
+  display: none;
+}
+
+.mc-calendar[data-readonly='true'] .fc .fc-event {
+  cursor: pointer;
 }
 
 /* A soft cue that a refresh is in flight, without moving anything. */
@@ -363,6 +380,22 @@ body {
   gap: 14px;
 }
 
+/* A disabled fieldset turns every control inside the event dialog read-only in
+   one switch, so a read-only view cannot drift from the editable one. */
+.mc-fields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mc-fields:disabled {
+  opacity: 0.92;
+}
+
 .mc-field {
   display: flex;
   flex-direction: column;
@@ -382,6 +415,27 @@ body {
 .mc-field__label {
   font-size: 12px;
   color: var(--mc-text-dim);
+}
+
+/* Category row in the event dialog: the swatch carries the colour, the select
+   carries the name, and they sit on one line so the choice reads at a glance. */
+.mc-cat-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mc-cat-field__dot {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+}
+
+.mc-cat-field select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .mc-field-row {
@@ -764,20 +818,44 @@ body {
   border-top: 1px solid var(--mc-border-soft);
 }
 
-.mc-switch {
+/* The edit lock is a button, not a checkbox: it is a mode you switch on for a
+   while, and the label says what it does rather than describing a state. */
+.mc-lock-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 18px;
+  border: 1px solid var(--mc-border);
+  background: var(--mc-surface-2);
+  color: var(--mc-text);
+  font: inherit;
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
-  user-select: none;
 }
 
-.mc-switch input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--mc-accent);
-  cursor: pointer;
+.mc-lock-btn:hover {
+  background: var(--mc-surface-hover);
+}
+
+/* Unlocked is the exceptional state, so it is the one that is coloured. */
+.mc-lock-btn.is-on {
+  border-color: transparent;
+  background: var(--mc-accent);
+  color: var(--mc-accent-contrast);
+}
+
+.mc-lock-btn.is-on:hover {
+  background: var(--mc-accent-strong);
+}
+
+.mc-lock-btn__icon {
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* A nudge rather than a success notice, so it reads differently. */
@@ -917,6 +995,13 @@ body {
   color: var(--mc-text);
 }
 
+/* The gear is also the "you are on the category page" indicator. */
+.mc-gear-btn.is-active {
+  border-color: transparent;
+  background: var(--mc-accent);
+  color: var(--mc-accent-contrast);
+}
+
 .mc-cats {
   list-style: none;
   margin: 0;
@@ -935,6 +1020,71 @@ body {
 
 .mc-cats__add {
   padding-top: 10px;
+  border-top: 1px solid var(--mc-border-soft);
+}
+
+/* ------------------------------------------------------------ category page */
+
+/* The category page covers the calendar rather than replacing it, so the grid
+   underneath keeps its view and scroll position while you are away. */
+.mc-page {
+  position: absolute;
+  inset: 12px 16px 16px;
+  z-index: 5;
+  overflow-y: auto;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius);
+  background: var(--mc-bg);
+}
+
+.mc-page__head {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--mc-border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mc-page__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.mc-page__lead {
+  margin: 0;
+  font-size: 13px;
+  color: var(--mc-text-dim);
+  max-width: 62ch;
+}
+
+.mc-page__body {
+  padding: 18px 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 720px;
+}
+
+/* A text-only button, for navigation actions such as "back". */
+.mc-btn--ghost {
+  align-self: flex-start;
+  height: 30px;
+  padding: 0 12px 0 8px;
+  border-radius: 15px;
+  font-size: 13px;
+  color: var(--mc-text-dim);
+}
+
+.mc-btn--ghost:hover:not(:disabled) {
+  color: var(--mc-text);
+}
+
+.mc-cats__row {
+  padding: 6px 0;
+}
+
+.mc-cats__row + .mc-cats__row {
   border-top: 1px solid var(--mc-border-soft);
 }
 

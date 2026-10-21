@@ -10,10 +10,23 @@ import { readEditUnlocked, saveEditUnlocked } from './theme'
 import { CalendarPane } from './components/CalendarPane'
 import { EventDialog } from './components/EventDialog'
 import { Sidebar } from './components/Sidebar'
-import { SettingsDialog } from './components/SettingsDialog'
+import { CategoriesPage } from './components/CategoriesPage'
 
 /** How long a success notice stays on screen. */
 const TOAST_MS = 2600
+
+/**
+ * The two pages this app has.
+ *
+ * They are real paths rather than local state so that a refresh stays put and
+ * the browser's back button works; the Go server serves the same shell for any
+ * non-/api path, which is what makes that possible without a router.
+ */
+type Route = 'calendar' | 'categories'
+
+function readRoute(): Route {
+  return window.location.pathname.startsWith('/categories') ? 'categories' : 'calendar'
+}
 
 export default function App() {
   const calendarRef = useRef<FullCalendar>(null)
@@ -24,7 +37,13 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [categories, setCategories] = useState<ApiCategory[]>([])
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [route, setRoute] = useState<Route>(() => readRoute())
+  /**
+   * Whether the event dialog is showing a saved event as read-only, because the
+   * edit lock is on. Kept apart from editUnlocked so unlocking from inside the
+   * dialog turns it editable in place instead of closing it.
+   */
+  const [viewOnly, setViewOnly] = useState(false)
   /**
    * Whether edits to existing events are unlocked.
    *
@@ -87,6 +106,19 @@ export default function App() {
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
+  // Keep the page in step with the history stack.
+  useEffect(() => {
+    const onPopState = () => setRoute(readRoute())
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  const navigate = useCallback((next: Route) => {
+    const path = next === 'categories' ? '/categories' : '/'
+    if (window.location.pathname !== path) window.history.pushState({ route: next }, '', path)
+    setRoute(next)
+  }, [])
+
   useEffect(() => {
     if (!toast) return
     const timer = window.setTimeout(() => setToast(null), TOAST_MS)
@@ -120,39 +152,58 @@ export default function App() {
     [load],
   )
 
+  // Opening an event always works: with the lock on it opens the details
+  // read-only, which is what "click to look" means.
   const handleEventClick = useCallback(
     (arg: EventClickArg) => {
-      // The lock guards existing events only; opening the editor is how they
-      // get changed or deleted, so that is what it stops.
-      if (!editUnlocked) {
-        setLockedNotice('编辑已锁定：请在左侧打开「编辑已保存的日程」后再修改')
-        return
-      }
       const id = Number(arg.event.id)
+      const open = (draft: EventDraft) => {
+        setViewOnly(!editUnlocked)
+        setDialogDraft(draft)
+      }
       const local = events.find((e) => e.id === id)
       if (local) {
-        setDialogDraft(draftFromEvent(local))
+        open(draftFromEvent(local))
         return
       }
       // Fall back to a fresh read if the event is not in the current page.
       void getEvent(id, BROWSER_TZ)
-        .then((event) => setDialogDraft(draftFromEvent(event)))
+        .then((event) => open(draftFromEvent(event)))
         .catch((err: unknown) => setLoadError(err instanceof ApiError ? err.fullMessage : String(err)))
     },
     [events, editUnlocked],
   )
 
-  const handleSelect = useCallback((arg: DateSelectArg) => {
-    // A plain click can surface as a zero-length selection; dateClick already
-    // opens the dialog for that case, so ignore it here to avoid two dialogs.
-    if (arg.end.getTime() - arg.start.getTime() <= 0) return
-    setDialogDraft(draftForRange(arg.start, arg.end, arg.allDay))
-  }, [])
+  // With the lock on, creating is available only through the sidebar button:
+  // dragging empty space or clicking the all-day row would otherwise open the
+  // create dialog, which is an editing interaction on the grid surface.
+  const handleSelect = useCallback(
+    (arg: DateSelectArg) => {
+      if (!editUnlocked) {
+        setLockedNotice('编辑已锁定：新建请用左上角的「新建日程」')
+        return
+      }
+      // A plain click can surface as a zero-length selection; dateClick already
+      // opens the dialog for that case, so ignore it here to avoid two dialogs.
+      if (arg.end.getTime() - arg.start.getTime() <= 0) return
+      setViewOnly(false)
+      setDialogDraft(draftForRange(arg.start, arg.end, arg.allDay))
+    },
+    [editUnlocked],
+  )
 
-  const handleDateClick = useCallback((arg: DateClickArg) => {
-    const end = arg.allDay ? null : new Date(arg.date.getTime() + 60 * 60 * 1000)
-    setDialogDraft(draftForRange(arg.date, end, arg.allDay))
-  }, [])
+  const handleDateClick = useCallback(
+    (arg: DateClickArg) => {
+      if (!editUnlocked) {
+        setLockedNotice('编辑已锁定：新建请用左上角的「新建日程」')
+        return
+      }
+      const end = arg.allDay ? null : new Date(arg.date.getTime() + 60 * 60 * 1000)
+      setViewOnly(false)
+      setDialogDraft(draftForRange(arg.date, end, arg.allDay))
+    },
+    [editUnlocked],
+  )
 
   const handleNew = useCallback(() => {
     const api = calendarRef.current?.getApi()
@@ -166,16 +217,23 @@ export default function App() {
       start.getDate() === now.getDate()
         ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0)
         : new Date(start.getFullYear(), start.getMonth(), start.getDate(), 9, 0, 0, 0)
+    setViewOnly(false)
     setDialogDraft(draftForRange(base, new Date(base.getTime() + 60 * 60 * 1000), false))
   }, [])
 
-  const handlePickDate = useCallback((date: Date) => {
-    calendarRef.current?.getApi().gotoDate(date)
-  }, [])
+  const handlePickDate = useCallback(
+    (date: Date) => {
+      // Picking a day is a calendar action, so it also leaves the category page.
+      navigate('calendar')
+      calendarRef.current?.getApi().gotoDate(date)
+    },
+    [navigate],
+  )
 
   const handleSaved = useCallback(
     (message: string) => {
       setDialogDraft(null)
+      setViewOnly(false)
       setToast(message)
       refresh()
     },
@@ -190,7 +248,8 @@ export default function App() {
         onNew={handleNew}
         editUnlocked={editUnlocked}
         onEditUnlockedChange={setEditUnlocked}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenCategories={() => navigate('categories')}
+        categoriesActive={route === 'categories'}
       />
 
       <main className="mc-main">
@@ -203,10 +262,17 @@ export default function App() {
           </div>
         )}
 
-        <div className="mc-calendar" data-loading={loading ? 'true' : 'false'}>
+        {/* The calendar stays mounted while the category page covers it, so
+            going there and back does not reset the view or refetch. */}
+        <div
+          className="mc-calendar"
+          data-loading={loading ? 'true' : 'false'}
+          data-readonly={editUnlocked ? 'false' : 'true'}
+        >
           <CalendarPane
             events={events}
             categories={categories}
+            readOnly={!editUnlocked}
             calendarRef={calendarRef}
             onDatesSet={handleDatesSet}
             onEventClick={handleEventClick}
@@ -214,22 +280,34 @@ export default function App() {
             onDateClick={handleDateClick}
           />
         </div>
+
+        {route === 'categories' && (
+          <CategoriesPage
+            categories={categories}
+            onBack={() => navigate('calendar')}
+            onChanged={handleCategoriesChanged}
+          />
+        )}
       </main>
 
       {dialogDraft && (
         <EventDialog
           draft={dialogDraft}
           categories={categories}
-          onClose={() => setDialogDraft(null)}
+          readOnly={viewOnly}
+          onRequestUnlock={
+            viewOnly
+              ? () => {
+                  setEditUnlocked(true)
+                  setViewOnly(false)
+                }
+              : undefined
+          }
+          onClose={() => {
+            setDialogDraft(null)
+            setViewOnly(false)
+          }}
           onSaved={handleSaved}
-        />
-      )}
-
-      {settingsOpen && (
-        <SettingsDialog
-          categories={categories}
-          onClose={() => setSettingsOpen(false)}
-          onChanged={handleCategoriesChanged}
         />
       )}
 

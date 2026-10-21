@@ -276,6 +276,65 @@ func TestBuiltInCategoriesAreRestored(t *testing.T) {
 	}
 }
 
+// A database written by an earlier build of this release still has the old
+// built-in defaults (未分类 in white), so startup moves them to the current
+// ones -- but only while they are untouched.
+func TestBuiltInDefaultsAreMigrated(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	path := st.Path()
+	st.Close()
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE categories SET name = '未分类', color = '#ffffff' WHERE id = 0`); err != nil {
+		t.Fatalf("write the old defaults: %v", err)
+	}
+	db.Close()
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reopened.Close()
+
+	category, err := reopened.GetCategory(ctx, CategoryUncategorized)
+	if err != nil {
+		t.Fatalf("GetCategory: %v", err)
+	}
+	if category.Name != "默认" || category.Color != "#1a73e8" {
+		t.Errorf("category 0 = %q/%q, want the new defaults 默认/#1a73e8", category.Name, category.Color)
+	}
+}
+
+// ...and a colour the user picked is not "the old default", so it stays.
+func TestBuiltInDefaultsAreNotImposedOnAChosenColour(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	path := st.Path()
+
+	if _, err := st.UpdateCategory(ctx, CategoryUncategorized, "默认", "#22aa66"); err != nil {
+		t.Fatalf("UpdateCategory: %v", err)
+	}
+	st.Close()
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reopened.Close()
+
+	category, err := reopened.GetCategory(ctx, CategoryUncategorized)
+	if err != nil {
+		t.Fatalf("GetCategory: %v", err)
+	}
+	if category.Color != "#22aa66" {
+		t.Errorf("colour = %q, want the chosen #22aa66 to survive", category.Color)
+	}
+}
+
 // A rename of a built-in category is user intent and must survive the repair.
 func TestRestoringBuiltInCategoriesKeepsRenames(t *testing.T) {
 	ctx := context.Background()

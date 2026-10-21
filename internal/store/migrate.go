@@ -93,12 +93,36 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 `
 
+// The names and colours the two built-in categories start with. They are not
+// arbitrary: 0 is what a new event gets, so its colour is what most of the
+// calendar looks like, and -1 is the label the API shows for a deleted event.
+const (
+	deletedCategoryName       = "删除"
+	deletedCategoryColor      = "#9aa0a6"
+	uncategorizedCategoryName = "默认"
+	// Google's blue: white text on it reaches 4.5:1, so the default blocks are
+	// legible without a per-event decision, and it matches the light theme's
+	// accent so the calendar and the UI read as one product.
+	uncategorizedCategoryColor = "#1a73e8"
+)
+
 // The two rows the application depends on. -1 marks an event as deleted, which
 // is what the delete endpoint sets, and 0 is the fallback for everything else.
 // Their ids are fixed, so later categories auto-increment from 1.
 const seedCategories = `
-INSERT OR IGNORE INTO categories (id, name, color) VALUES (-1, '删除', '#9aa0a6');
-INSERT OR IGNORE INTO categories (id, name, color) VALUES (0, '未分类', '#ffffff');
+INSERT OR IGNORE INTO categories (id, name, color) VALUES (-1, '` + deletedCategoryName + `', '` + deletedCategoryColor + `');
+INSERT OR IGNORE INTO categories (id, name, color) VALUES (0, '` + uncategorizedCategoryName + `', '` + uncategorizedCategoryColor + `');
+`
+
+// migrateBuiltInDefaults brings the built-in rows written by earlier builds up
+// to the current defaults. It only touches values that are still exactly the
+// old defaults, so a name or colour the user chose is never overwritten -- and
+// it is the reason the defaults could change without a format bump: the shape
+// of the table did not change, only two seeded values.
+const migrateBuiltInDefaults = `
+UPDATE categories SET name = '` + uncategorizedCategoryName + `' WHERE id = 0 AND name = '未分类';
+UPDATE categories SET color = '` + uncategorizedCategoryColor + `'
+ WHERE id = 0 AND color IN ('#ffffff', '#4f8cff');
 `
 
 // currentSchema creates the schema of FormatVersion from nothing.
@@ -290,11 +314,15 @@ func (s *Store) createCurrent(ctx context.Context) error {
 	return nil
 }
 
-// ensureSeedCategories inserts the built-in categories if they are missing.
-// Idempotent, so it runs on every startup.
+// ensureSeedCategories inserts the built-in categories if they are missing and
+// normalises the ones written by earlier builds. Idempotent, so it runs on
+// every startup.
 func (s *Store) ensureSeedCategories(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, seedCategories); err != nil {
 		return fmt.Errorf("restore the built-in categories: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, migrateBuiltInDefaults); err != nil {
+		return fmt.Errorf("update the built-in category defaults: %w", err)
 	}
 	return nil
 }

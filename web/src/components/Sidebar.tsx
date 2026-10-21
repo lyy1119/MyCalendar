@@ -24,7 +24,9 @@ interface Props {
   /** Whether editing existing events is unlocked. */
   editUnlocked: boolean
   onEditUnlockedChange: (unlocked: boolean) => void
-  onOpenSettings: () => void
+  onOpenCategories: () => void
+  /** Whether the category page is the one on screen, so the gear can show it. */
+  categoriesActive: boolean
 }
 
 /**
@@ -67,7 +69,8 @@ export function Sidebar({
   onNew,
   editUnlocked,
   onEditUnlockedChange,
-  onOpenSettings,
+  onOpenCategories,
+  categoriesActive,
 }: Props) {
   const miniRef = useRef<FullCalendar>(null)
   const [themeMode, setThemeMode, resolvedTheme] = useTheme()
@@ -92,10 +95,11 @@ export function Sidebar({
         </button>
         <button
           type="button"
-          className="mc-gear-btn"
-          onClick={onOpenSettings}
-          aria-label="设置"
-          title="设置：分类"
+          className={categoriesActive ? 'mc-gear-btn is-active' : 'mc-gear-btn'}
+          onClick={onOpenCategories}
+          aria-label="分类"
+          aria-pressed={categoriesActive}
+          title="分类管理"
         >
           <span aria-hidden="true">⚙</span>
         </button>
@@ -131,7 +135,7 @@ export function Sidebar({
         <dt>时区</dt>
         <dd>{BROWSER_TZ}</dd>
         <dt>说明</dt>
-        <dd>点击日程即可编辑，拖动空白处可新建</dd>
+        <dd>{editUnlocked ? '点击日程可查看并修改，拖动空白处可新建' : '点击日程可查看内容；新建用左上角按钮'}</dd>
       </dl>
 
       <div className="mc-theme">
@@ -157,19 +161,22 @@ export function Sidebar({
       </div>
 
       <div className="mc-edit">
-        <label className="mc-switch">
-          <input
-            type="checkbox"
-            checked={editUnlocked}
-            onChange={(e) => onEditUnlockedChange(e.target.checked)}
-          />
-          <span>编辑已保存的日程</span>
-        </label>
+        <button
+          type="button"
+          className={editUnlocked ? 'mc-lock-btn is-on' : 'mc-lock-btn'}
+          aria-pressed={editUnlocked}
+          onClick={() => onEditUnlockedChange(!editUnlocked)}
+        >
+          <span className="mc-lock-btn__icon" aria-hidden="true">
+            {editUnlocked ? '🔓' : '🔒'}
+          </span>
+          <span>{editUnlocked ? '修改已开启' : '开启修改'}</span>
+        </button>
         {/* Creating is deliberately never gated, so the hint has to say so. */}
         <p className="mc-hint">
           {editUnlocked
             ? '点击日程可修改或删除'
-            : '已锁定：点击日程不会打开编辑框。「新建日程」随时可用'}
+            : '已锁定：点击日程只能查看内容，「新建日程」仍然可用'}
         </p>
       </div>
     </aside>

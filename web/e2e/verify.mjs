@@ -97,6 +97,30 @@ try {
     end_at: hourIn(today, 1, 15),
     is_task: true,
   })
+
+  // The category colours are user data, so the two ends of the range are the
+  // interesting cases: a pale fill that can vanish into a white page and a
+  // near-black one that can vanish into the dark theme.
+  const paleCategory = await api('/api/v1/categories', {
+    method: 'POST',
+    body: JSON.stringify({ name: '浅色分类', color: '#fff59d' }),
+  })
+  const darkCategory = await api('/api/v1/categories', {
+    method: 'POST',
+    body: JSON.stringify({ name: '深色分类', color: '#101010' }),
+  })
+  await post({
+    title: '浅色块',
+    start_at: hourIn(today, 2, 10),
+    end_at: hourIn(today, 2, 11),
+    category_id: paleCategory.body?.id,
+  })
+  await post({
+    title: '深色块',
+    start_at: hourIn(today, 3, 10),
+    end_at: hourIn(today, 3, 11),
+    category_id: darkCategory.body?.id,
+  })
   check(
     'events created through the API',
     [allDay, timed, multiDay, task].every((r) => r.status === 201),
@@ -131,11 +155,56 @@ try {
 
   // Every query is scoped to .mc-calendar: the sidebar mini calendar renders
   // its own column headers, day cells and all-day events.
-  // Editing existing events is locked by default, and unlocking persists in
-  // localStorage. Check the default, then unlock so the rest of this suite can
-  // click through to the editor -- the earlier checks are read-only.
-  const unlockSwitch = page.locator('.mc-sidebar .mc-edit input[type="checkbox"]')
-  check('editing is locked by default', (await unlockSwitch.isChecked()) === false)
+  // Editing existing events is locked by default, and the lock is a button
+  // rather than a checkbox. Check the default, then unlock so the rest of this
+  // suite can click through to the editor -- the earlier checks are read-only.
+  const lockButton = page.locator('.mc-sidebar .mc-lock-btn')
+  check('editing is locked by default', (await lockButton.getAttribute('aria-pressed')) === 'false')
+  check(
+    'the lock is a button labelled with its action',
+    ((await lockButton.textContent()) ?? '').includes('开启修改'),
+    await lockButton.textContent(),
+  )
+
+  // Locked still allows looking: clicking an event opens the details, with
+  // every field read-only and no save or delete action.
+  await page
+    .locator('.mc-calendar .fc-timegrid-event', { hasText: '定时日程' })
+    .first()
+    .click({ position: { x: 24, y: 10 } })
+  await page.waitForSelector('.mc-dialog', { timeout: 5000 })
+  check(
+    'a locked click opens the details, not the editor',
+    (await page.locator('.mc-dialog').getAttribute('aria-label')) === '日程详情',
+    await page.locator('.mc-dialog').getAttribute('aria-label'),
+  )
+  check('the details show the content', (await page.locator('.mc-dialog input').first().inputValue()) === '定时日程')
+  check(
+    'the read-only view has no save button',
+    (await page.locator('.mc-dialog button[type="submit"]').count()) === 0,
+  )
+  check(
+    'the read-only view has no delete button',
+    (await page.locator('.mc-dialog .mc-btn--danger').count()) === 0,
+  )
+  check('the fields are disabled', await page.locator('.mc-dialog input').first().isDisabled())
+  // ...but the way out is right there, rather than "go find the lock yourself".
+  check(
+    'the read-only view offers to unlock',
+    (await page.locator('.mc-dialog .mc-btn', { hasText: '开启修改' }).count()) === 1,
+  )
+  await page.locator('.mc-dialog .mc-btn', { hasText: '关闭' }).click()
+  await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
+
+  // Dragging empty grid space would normally create an event. Locked, it must
+  // not: creating is only available from the sidebar button.
+  const column = await page.locator('.mc-calendar .fc-timegrid-col').first().boundingBox()
+  await page.mouse.move(column.x + column.width / 2, column.y + 120)
+  await page.mouse.down()
+  await page.mouse.move(column.x + column.width / 2, column.y + 200, { steps: 6 })
+  await page.mouse.up()
+  await page.waitForTimeout(400)
+  check('a locked grid cannot create by dragging', (await page.locator('.mc-dialog').count()) === 0)
 
   const layout = await page.evaluate(() => {
     const root = document.querySelector('.mc-calendar')
@@ -245,9 +314,9 @@ try {
 
   // ------------------------------------------- click through to the editor
 
-  await unlockSwitch.check()
+  await lockButton.click()
   await page.waitForTimeout(200)
-  check('unlocking editing takes effect', (await unlockSwitch.isChecked()) === true)
+  check('unlocking editing takes effect', (await lockButton.getAttribute('aria-pressed')) === 'true')
 
   // Overlapping events are stacked, so the exposed left edge is the clickable
   // part, exactly as in Google Calendar.
@@ -589,6 +658,105 @@ try {
     })
     check('the time grid scrollbar is hidden', bars?.width === 'none' && bars?.gap === 0, `width=${bars?.width} gap=${bars?.gap}`)
   }
+
+  // -------------------------------------------------- colour and legibility
+  // A solid block colour is only a design decision if the text on it is still
+  // readable, so the assertion is the WCAG contrast ratio itself rather than a
+  // screenshot someone has to squint at.
+  const contrastInPage = async () =>
+    page.evaluate(() => {
+      const lin = (v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4)
+      const parse = (css) => {
+        const nums = (css.match(/[\d.]+/g) ?? []).map(Number)
+        return { r: nums[0], g: nums[1], b: nums[2], a: nums[3] ?? 1 }
+      }
+      const lum = ({ r, g, b }) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+      const ratio = (a, b) => {
+        const [hi, lo] = lum(a) > lum(b) ? [lum(a), lum(b)] : [lum(b), lum(a)]
+        return (hi + 0.05) / (lo + 0.05)
+      }
+
+      const pageBg = parse(getComputedStyle(document.querySelector('.mc-calendar')).backgroundColor)
+      const chips = [...document.querySelectorAll('.mc-calendar .fc-timegrid-event')].map((el) => {
+        const block = getComputedStyle(el)
+        const main = el.querySelector('.fc-event-main')
+        return {
+          title: el.textContent.trim(),
+          bg: parse(block.backgroundColor),
+          border: parse(block.borderTopColor),
+          text: parse(main ? getComputedStyle(main).color : block.color),
+        }
+      })
+      return chips.map((chip) => ({
+        title: chip.title,
+        textOnFill: ratio(chip.text, chip.bg),
+        // A pale fill on a white page reads through its border, not its fill,
+        // so what matters is the stronger of the two.
+        separation: Math.max(ratio(chip.bg, pageBg), ratio(chip.border, pageBg)),
+        borderOnFill: ratio(chip.border, chip.bg),
+      }))
+    })
+
+  const setTheme = async (label) => {
+    await page.locator('.mc-segmented__item', { hasText: label }).click()
+    await page.waitForTimeout(250)
+  }
+
+  for (const theme of ['亮色', '暗色']) {
+    await setTheme(theme)
+    const report = await contrastInPage()
+    const wanted = ['浅色块', '深色块', '定时日程']
+    const seen = report.filter((r) => wanted.some((t) => r.title.startsWith(t)))
+    check(`${theme}：every filled block was found`, seen.length === wanted.length, report.map((r) => r.title).join('|'))
+    const unreadable = seen.filter((r) => r.textOnFill < 4.5)
+    check(
+      `${theme}：text on a filled block is readable (>= 4.5:1)`,
+      unreadable.length === 0,
+      unreadable.map((r) => `${r.title} ${r.textOnFill.toFixed(2)}`).join(', '),
+    )
+    const invisible = seen.filter((r) => r.separation < 1.2)
+    check(
+      `${theme}：the block is distinguishable from the page behind it`,
+      invisible.length === 0,
+      seen.map((r) => `${r.title} ${r.separation.toFixed(2)}`).join(', '),
+    )
+    const edgeless = seen.filter((r) => r.borderOnFill < 1.05)
+    check(
+      `${theme}：the block has a visible edge`,
+      edgeless.length === 0,
+      seen.map((r) => `${r.title} ${r.borderOnFill.toFixed(2)}`).join(', '),
+    )
+  }
+  await setTheme('自动')
+
+  // ------------------------------------------------------- category page
+  // The gear opens a page of its own (a real path, so a refresh stays there),
+  // not a dialog.
+  await page.locator('.mc-sidebar .mc-gear-btn').click()
+  await page.waitForSelector('.mc-page', { timeout: 5000 })
+  check('the gear opens a page', new URL(page.url()).pathname === '/categories', page.url())
+  const rows = await page.locator('.mc-page .mc-cats__row').count()
+  check('the page lists the categories', rows >= 2, `rows=${rows}`)
+  check(
+    'the deleted category name is not editable',
+    await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').isDisabled(),
+  )
+  check(
+    'the default category name is editable',
+    (await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').isDisabled()) === false,
+  )
+  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').fill('默认（改过）')
+  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').blur()
+  await page.waitForTimeout(500)
+  const renamed = await api('/api/v1/categories/0')
+  check('renaming the default category is saved', renamed.body?.name === '默认（改过）', `name=${renamed.body?.name}`)
+  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').fill('默认')
+  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').blur()
+  await page.waitForTimeout(500)
+
+  await page.locator('.mc-page .mc-btn--ghost').click()
+  await page.waitForSelector('.mc-calendar .fc-timegrid-col', { timeout: 5000 })
+  check('back returns to the calendar', new URL(page.url()).pathname === '/', page.url())
 
   check('no console errors during the whole run', consoleErrors.length === 0, consoleErrors.join(' | '))
 
