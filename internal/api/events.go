@@ -97,6 +97,12 @@ func filterSummary(f model.EventFilter) map[string]any {
 	if f.IsCompleted != nil {
 		out["is_completed"] = *f.IsCompleted
 	}
+	if f.CategoryID != nil {
+		out["category_id"] = *f.CategoryID
+	}
+	if f.IncludeDeleted {
+		out["include_deleted"] = true
+	}
 	if f.Query != "" {
 		out["q"] = f.Query
 	}
@@ -202,7 +208,7 @@ func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"service":     "MyCalendar",
-		"description": "A small self-hosted calendar API: events with reminders, queried by day, week or month.",
+		"description": "A small self-hosted calendar API: events with categories and reminders, queried by day, week or month.",
 		"version":     s.version,
 		"frontend":    "/",
 		"help":        "/help",
@@ -223,7 +229,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			{"method": "GET", "path": "/api/v1/events", "summary": "List events in a day, week, month or explicit window"},
 			{"method": "GET", "path": "/api/v1/events/{id}", "summary": "Fetch one event with its reminders"},
 			{"method": "PATCH", "path": "/api/v1/events/{id}", "summary": "Partially update an event"},
-			{"method": "DELETE", "path": "/api/v1/events/{id}", "summary": "Delete an event and its reminders"},
+			{"method": "DELETE", "path": "/api/v1/events/{id}", "summary": "Delete an event by moving it to the deleted category (-1); the row stays"},
+			{"method": "POST", "path": "/api/v1/events/{id}/remove", "summary": "Remove an event for good, together with its reminders"},
+			{"method": "GET", "path": "/api/v1/reminders", "summary": "List reminders, for one event and/or a time window"},
+			{"method": "POST", "path": "/api/v1/reminders", "summary": "Attach a reminder to an existing event"},
+			{"method": "GET", "path": "/api/v1/reminders/{id}", "summary": "Fetch one reminder"},
+			{"method": "PATCH", "path": "/api/v1/reminders/{id}", "summary": "Move a reminder to a new time"},
+			{"method": "DELETE", "path": "/api/v1/reminders/{id}", "summary": "Delete one reminder, leaving the event alone"},
+			{"method": "GET", "path": "/api/v1/categories", "summary": "List all categories, including the built-in -1 and 0"},
+			{"method": "POST", "path": "/api/v1/categories", "summary": "Create a category"},
+			{"method": "GET", "path": "/api/v1/categories/{id}", "summary": "Fetch one category"},
+			{"method": "PATCH", "path": "/api/v1/categories/{id}", "summary": "Rename or recolour a category"},
+			{"method": "DELETE", "path": "/api/v1/categories/{id}", "summary": "Delete a category, moving its events back to uncategorized"},
 		},
 		"server_time": time.Now().In(s.opts.DefaultLocation).Format(time.RFC3339),
 	})

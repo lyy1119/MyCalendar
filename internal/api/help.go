@@ -65,6 +65,7 @@ type helpTable struct {
 
 type helpSemantics struct {
 	TimedEvent  []string `json:"timed_event"`
+	Deleting    []string `json:"deleting"`
 	AllDayEvent []string `json:"all_day_event"`
 	Task        []string `json:"task"`
 	Reminders   []string `json:"reminders"`
@@ -110,6 +111,7 @@ type helpLimits struct {
 	TitleRunes        int    `json:"title_max_characters"`
 	NotesRunes        int    `json:"notes_max_characters"`
 	LocationRunes     int    `json:"location_max_characters"`
+	CategoryNameRunes int    `json:"category_name_max_characters"`
 	RemindersPerEvent int    `json:"reminders_per_event_max"`
 	SearchRunes       int    `json:"search_query_max_characters"`
 	MaxPageSize       int    `json:"limit_max"`
@@ -207,12 +209,26 @@ func (s *Server) buildHelp() helpDoc {
 					{Name: "event_date", Type: "TEXT NULL", Description: "The calendar date YYYY-MM-DD of an all-day event. Null for timed events."},
 					{Name: "is_task", Type: "INTEGER NOT NULL DEFAULT 0", Description: "1 if the event is completable."},
 					{Name: "is_completed", Type: "INTEGER NOT NULL DEFAULT 0", Description: "1 if a task is done. Forced to 0 whenever is_task is 0."},
+					{Name: "category_id", Type: "INTEGER NOT NULL DEFAULT 0", Description: "The event's single category. 0 means uncategorized; -1 means the event has been deleted, which is what deleting does."},
 					{Name: "created_at", Type: "INTEGER NOT NULL", Description: "Insert instant, Unix seconds. Server-managed."},
 					{Name: "updated_at", Type: "INTEGER NOT NULL", Description: "Last modification instant, Unix seconds. Server-managed, refreshed on every successful PATCH."},
 				},
 				Notes: []string{
-					"Indexed on start_at, end_at, event_date and (is_all_day, is_task, is_completed).",
+					"Indexed on start_at, end_at, event_date, (is_all_day, is_task, is_completed) and category_id.",
 					"The schema is fixed at the two tables described here; the service only adds indexes.",
+				},
+			},
+			{
+				Name:        "categories",
+				Description: "Groups events and gives them a colour. Two rows are part of the API's contract.",
+				Columns: []helpField{
+					{Name: "id", Type: "INTEGER PRIMARY KEY", Description: "Category id. -1 marks an event as deleted and 0 is uncategorized; both are seeded and cannot be removed. User categories are assigned automatically and start at 1."},
+					{Name: "name", Type: "TEXT NOT NULL", Description: "Display name, 1 to 100 characters."},
+					{Name: "color", Type: "TEXT NOT NULL", Description: "Hex colour, #rgb or #rrggbb. Stored lower-cased and expanded to six digits, so #ABC becomes #aabbcc."},
+				},
+				Notes: []string{
+					"Deleting a category moves its events to uncategorized (0) in the same transaction; no event is left pointing at a missing category.",
+					"The two seeded rows are refused with 409 category_protected, because -1 is how an event is marked as deleted and 0 is the fallback.",
 				},
 			},
 			{
@@ -258,6 +274,13 @@ func (s *Server) buildHelp() helpDoc {
 				"Each reminder is returned with id, event_id, remind_at, created_at and the derived remind_at_local.",
 				"remind_at is absolute. There is no \"N minutes before the event\" form in the API; compute the instant from the event start if that is what you want to offer in a UI.",
 				"Deleting an event deletes its reminders; deleting a reminder does not touch its event.",
+			},
+			Deleting: []string{
+				"DELETE /api/v1/events/{id} does not remove the row: it moves the event to category -1, which is the deleted category. That is exactly equivalent to PATCHing category_id to -1, the endpoint is simply a shortcut for it.",
+				"A deleted event keeps its data and can be restored by setting category_id back to 0, or to any other category.",
+				"A deleted event stops appearing in range queries, so it is off the calendar. Pass include_deleted=true to see it again, and GET /api/v1/events/{id} keeps returning it either way.",
+				"Deleting an event that is already deleted is a 204, not an error: the event exists and is marked.",
+				"To destroy the row for good, use POST /api/v1/events/{id}/remove. That is the only operation that deletes data, and it also removes the event's reminders.",
 			},
 			Patching: []string{
 				"PATCH takes the same field set as POST, but every field is optional. Only the fields present in the body are touched.",
@@ -322,6 +345,8 @@ func (s *Server) buildHelp() helpDoc {
 					"from, to -- explicit half-open window as Unix seconds, RFC3339, or an offset-free local timestamp; mutually exclusive with range/date",
 					"tz -- IANA timezone deciding the window boundaries",
 					"week_start=monday|sunday -- overrides the server default for range=week",
+					"category_id -- keep only events in this category. Naming a category explicitly wins over the default: category_id=-1 lists the deleted events rather than hiding them",
+					"include_deleted=true -- stop hiding events in the deleted category; ignored when category_id is given",
 					"is_task=true|false -- keep only tasks or only non-tasks",
 					"is_completed=true|false -- keep only completed or only open items",
 					"q -- case-insensitive substring match on title",
@@ -419,10 +444,64 @@ func (s *Server) buildHelp() helpDoc {
 			{
 				Method:      "DELETE",
 				Path:        "/api/v1/events/{id}",
-				Summary:     "Delete an event. Its reminders are removed by ON DELETE CASCADE.",
+				Summary:     "Delete an event by moving it to the deleted category (-1). The row stays, the event leaves the calendar, and it can be restored. Use POST /api/v1/events/{id}/remove to destroy it.",
 				Success:     "204 with an empty body",
 				Errors:      []string{"400 invalid_parameter", "404 not_found"},
 				CurlExample: "curl -s -X DELETE -o /dev/null -w '%{http_code}\\n' http://localhost:8080/api/v1/events/1",
+			},
+			{
+				Method:  "POST",
+				Path:    "/api/v1/events/{id}/remove",
+				Summary: "Remove an event permanently. The row is deleted together with its reminders, and the id is never reused. This is the only destructive endpoint.",
+				Parameters: []string{
+					"tz -- accepted for symmetry; it does not change anything",
+				},
+				Success:     "204 with an empty body",
+				Errors:      []string{"400 invalid_parameter", "404 not_found"},
+				CurlExample: "curl -s -X POST -o /dev/null -w '%{http_code}\\n' http://localhost:8080/api/v1/events/1/remove",
+			},
+			{
+				Method:      "GET",
+				Path:        "/api/v1/categories",
+				Summary:     "List every category, including the built-in deleted (-1) and uncategorized (0) rows. Ordered by id, so the built-ins come first.",
+				Success:     "200 with count and categories",
+				CurlExample: "curl -s http://localhost:8080/api/v1/categories",
+			},
+			{
+				Method:  "POST",
+				Path:    "/api/v1/categories",
+				Summary: "Create a category. The id is assigned automatically and starts at 1; -1 and 0 already exist and cannot be recreated.",
+				Body:    `{"name": "Work", "color": "#4f8cff"}`,
+				Success: "201 with the created category, a Location header and the assigned id",
+				Errors:  []string{"400 validation_failed", "400 invalid_body"},
+				CurlExample: `curl -s -X POST http://localhost:8080/api/v1/categories \
+  -H 'Content-Type: application/json' -d '{"name":"Work","color":"#4f8cff"}'`,
+			},
+			{
+				Method:      "GET",
+				Path:        "/api/v1/categories/{id}",
+				Summary:     "Fetch one category.",
+				Success:     "200 with the category",
+				Errors:      []string{"400 invalid_parameter", "404 not_found"},
+				CurlExample: "curl -s http://localhost:8080/api/v1/categories/1",
+			},
+			{
+				Method:  "PATCH",
+				Path:    "/api/v1/categories/{id}",
+				Summary: "Rename a category or change its colour, including the built-in ones. Events pick the change up because they store only the id.",
+				Body:    `{"color": "#34d399"}`,
+				Success: "200 with the complete category after normalisation",
+				Errors:  []string{"400 validation_failed", "400 invalid_body", "404 not_found"},
+				CurlExample: `curl -s -X PATCH http://localhost:8080/api/v1/categories/1 \
+  -H 'Content-Type: application/json' -d '{"color":"#34d399"}'`,
+			},
+			{
+				Method:      "DELETE",
+				Path:        "/api/v1/categories/{id}",
+				Summary:     "Delete a user category. Its events are moved to uncategorized (0) in the same transaction, so no event is lost. The built-in -1 and 0 categories are protected.",
+				Success:     "204 with an empty body",
+				Errors:      []string{"400 invalid_parameter", "404 not_found", "409 category_protected"},
+				CurlExample: "curl -s -X DELETE -o /dev/null -w '%{http_code}\\n' http://localhost:8080/api/v1/categories/1",
 			},
 		},
 		BodyFields: []helpField{
@@ -435,6 +514,9 @@ func (s *Server) buildHelp() helpDoc {
 			{Name: "event_date", Type: "string", Required: "yes for an all-day event", Nullable: "yes", Description: "Calendar date YYYY-MM-DD. Sending it also sets is_all_day. null clears it and the event becomes timed."},
 			{Name: "is_task", Type: "boolean", Required: "no", Default: "false", Description: "Marks the event as a completable task."},
 			{Name: "is_completed", Type: "boolean", Required: "no", Default: "false", Description: "Completion state. Stored as false whenever is_task is false."},
+			{Name: "category_id", Type: "integer", Required: "no", Default: "0", Description: "The event's category. Must be an existing category. Setting it to -1 is exactly what DELETE does; setting it back to 0 restores the event."},
+			{Name: "name", Type: "string", Required: "yes for POST /api/v1/categories", Description: "A category's display name, 1 to 100 characters after trimming."},
+			{Name: "color", Type: "string", Required: "yes for POST /api/v1/categories", Description: "A category's colour: #rgb or #rrggbb. Normalised to lower-case six-digit form."},
 			{Name: "reminders", Type: "array of objects", Required: "no", Nullable: "yes", Description: "Whole-set replacement of the event's reminders, saved atomically with the event. Each object has one field, remind_at. Equivalent to the standalone reminder endpoints below, but in a single request."},
 			{Name: "event_id", Type: "integer", Required: "yes for POST /api/v1/reminders", Nullable: "no", Description: "The event the reminder belongs to. Must already exist. Not accepted inside an event payload, where it is implied."},
 			{Name: "remind_at", Type: "integer or string", Required: "yes for the reminder endpoints", Nullable: "no", Description: "The instant to remind at, in the same three encodings as start_at: Unix seconds, RFC3339 with an offset, or an offset-free local timestamp read in tz. There is no relative form such as \"10 minutes before\"; compute it from the event start."},
@@ -446,6 +528,8 @@ func (s *Server) buildHelp() helpDoc {
 			{Name: "from", Type: "string", Description: "Inclusive lower bound of an explicit window.", Constraints: "RFC3339 or Unix seconds"},
 			{Name: "to", Type: "string", Description: "Exclusive upper bound of an explicit window; must be later than from.", Constraints: "RFC3339 or Unix seconds"},
 			{Name: "week_start", Type: "string", Description: "First day of a week window.", Constraints: "monday | sunday"},
+			{Name: "category_id", Type: "integer", Description: "Keep only events in this category, including the built-in -1 and 0. Naming a category explicitly wins over the default hiding of deleted events, so category_id=-1 lists them.", Constraints: "must be an existing category id"},
+			{Name: "include_deleted", Type: "boolean", Description: "Stop hiding events in the deleted category (-1). Ignored when category_id is given.", Constraints: "true | false, default false"},
 			{Name: "is_task", Type: "boolean", Description: "Filter by task flag."},
 			{Name: "is_completed", Type: "boolean", Description: "Filter by completion flag."},
 			{Name: "q", Type: "string", Description: "Case-insensitive substring match on title.", Constraints: "at most 200 characters"},
@@ -455,6 +539,7 @@ func (s *Server) buildHelp() helpDoc {
 		ResponseFields: []helpField{
 			{Name: "id", Type: "integer", Description: "Event identifier, used in the path of every single-event endpoint."},
 			{Name: "title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at", Type: "see the data model", Description: "The stored row, exactly as persisted."},
+			{Name: "category_id", Type: "integer", Description: "The event's category. Look it up in GET /api/v1/categories for its name and colour."},
 			{Name: "reminders", Type: "array", Description: "The event's reminders, ordered by remind_at. Each has id, event_id, remind_at, created_at and remind_at_local."},
 			{Name: "start_at_local", Type: "string", Description: "Derived: start_at rendered as RFC3339 in the request timezone. Read-only."},
 			{Name: "end_at_local", Type: "string or null", Description: "Derived: end_at rendered as RFC3339 in the request timezone. Null when end_at is null. Read-only."},
@@ -468,6 +553,7 @@ func (s *Server) buildHelp() helpDoc {
 			{Code: "body_too_large", HTTPStatus: 413, Meaning: "The body exceeded 1 MiB."},
 			{Code: "not_found", HTTPStatus: 404, Meaning: "No such event or reminder, or no such endpoint."},
 			{Code: "reminder_exists", HTTPStatus: 409, Meaning: "That event already has a reminder at exactly that time."},
+			{Code: "category_protected", HTTPStatus: 409, Meaning: "The deleted (-1) and uncategorized (0) categories are part of the API and cannot be removed."},
 			{Code: "method_not_allowed", HTTPStatus: 405, Meaning: "The path exists but not for that method; the Allow header lists what is supported."},
 			{Code: "request_cancelled", HTTPStatus: 408, Meaning: "The client disconnected before the request completed."},
 			{Code: "internal_error", HTTPStatus: 500, Meaning: "An unexpected server-side failure. The body carries no internal detail."},
@@ -476,6 +562,7 @@ func (s *Server) buildHelp() helpDoc {
 			TitleRunes:        titleMaxRunes,
 			NotesRunes:        notesMaxRunes,
 			LocationRunes:     locationMaxRunes,
+			CategoryNameRunes: maxCategoryNameRunes,
 			RemindersPerEvent: remindersMax,
 			SearchRunes:       queryMaxRunes,
 			MaxPageSize:       pageSizeMax,
@@ -491,7 +578,7 @@ func (s *Server) buildHelp() helpDoc {
 					`{"title":"Dentist","start_at":1773205200,"end_at":1773208800,"notes":"Bring the insurance card","location":"Clinic, 2nd floor"}`,
 				Response: "201 Created\n" +
 					`{"id":1,"title":"Dentist","notes":"Bring the insurance card","location":"Clinic, 2nd floor","start_at":1773205200,"end_at":1773208800,` +
-					`"is_all_day":false,"event_date":null,"is_task":false,"is_completed":false,` +
+					`"is_all_day":false,"event_date":null,"is_task":false,"is_completed":false,"category_id":0,` +
 					`"created_at":1773200000,"updated_at":1773200000,"reminders":[],` +
 					`"start_at_local":"2026-03-11T13:00:00+08:00","end_at_local":"2026-03-11T14:00:00+08:00"}`,
 			},
@@ -503,7 +590,7 @@ func (s *Server) buildHelp() helpDoc {
 					`{"title":"Renew the domain","event_date":"2026-03-31","is_task":true,"reminders":[{"remind_at":1774886400}]}`,
 				Response: "201 Created\n" +
 					`{"id":2,"title":"Renew the domain","notes":null,"location":null,"start_at":1774886400,"end_at":1774972800,` +
-					`"is_all_day":true,"event_date":"2026-03-31","is_task":true,"is_completed":false,` +
+					`"is_all_day":true,"event_date":"2026-03-31","is_task":true,"is_completed":false,"category_id":0,` +
 					`"created_at":1773200100,"updated_at":1773200100,` +
 					`"reminders":[{"id":1,"event_id":2,"remind_at":1774886400,"created_at":1773200100}],` +
 					`"start_at_local":"2026-03-31T00:00:00+08:00","end_at_local":"2026-04-01T00:00:00+08:00"}`,
@@ -541,6 +628,28 @@ func (s *Server) buildHelp() helpDoc {
 				Response:    "200 OK with every event overlapping 09:00-18:00 on 2026-03-11, all-day events included",
 			},
 			{
+				Title:       "Delete an event and take it back",
+				Description: "DELETE is a soft delete: the event joins the deleted category (-1) and leaves every list query. Sending category_id back restores it. Only /remove destroys the row.",
+				Request: "DELETE /api/v1/events/1\n\n" +
+					"...\n\n" +
+					"PATCH /api/v1/events/1\n" +
+					"Content-Type: application/json\n\n" +
+					`{"category_id":0}`,
+				Response: "204 No Content, then 200 OK with \"category_id\":0 and the event back in range queries",
+			},
+			{
+				Title:       "Create a category and colour an event with it",
+				Description: "A category is just a name and a colour. Events reference it by id, so renaming or recolouring updates every event at once.",
+				Request: "POST /api/v1/categories\n" +
+					"Content-Type: application/json\n\n" +
+					`{"name":"Work","color":"#4f8cff"}` + "\n\n" +
+					"PATCH /api/v1/events/1\n" +
+					"Content-Type: application/json\n\n" +
+					`{"category_id":1}`,
+				Response: "201 Created\n" +
+					`{"id":1,"name":"Work","color":"#4f8cff"}` + "\n\nthen 200 OK with the event carrying \"category_id\":1",
+			},
+			{
 				Title:       "A validation failure",
 				Description: "Field-level problems are reported together rather than one at a time.",
 				Request: "POST /api/v1/events\n" +
@@ -557,6 +666,7 @@ func (s *Server) buildHelp() helpDoc {
 			"Relative reminder offsets. remind_at is always an absolute instant; a \"10 minutes before\" form is a UI affordance, not an API one.",
 			"Recurring events. There is no recurrence rule column, so each occurrence is a distinct event.",
 			"Multi-day all-day events. The schema holds a single event_date; use a timed event for a multi-day span.",
+			"A trash view. Deleted events are still reachable with include_deleted=true, but nothing in the API restores them in bulk.",
 			"Authentication and multi-user isolation. The service is single-user by design.",
 			"Full-text search. q performs a substring match on title only.",
 			"A web frontend.",
@@ -573,6 +683,8 @@ const (
 	remindersMax     = 50
 	queryMaxRunes    = 200
 	pageSizeMax      = 2000
+
+	maxCategoryNameRunes = 100
 )
 
 // renderHelpText writes the same reference as Markdown for humans and for
@@ -651,6 +763,7 @@ func renderHelpText(d helpDoc) string {
 		{"Timed events", d.Semantics.TimedEvent},
 		{"All-day events", d.Semantics.AllDayEvent},
 		{"Tasks", d.Semantics.Task},
+		{"Deleting and restoring", d.Semantics.Deleting},
 		{"Reminders", d.Semantics.Reminders},
 		{"Patching", d.Semantics.Patching},
 	} {
@@ -749,6 +862,7 @@ func renderHelpText(d helpDoc) string {
 	line("- title: at most %d characters", d.Limits.TitleRunes)
 	line("- notes: at most %d characters", d.Limits.NotesRunes)
 	line("- location: at most %d characters", d.Limits.LocationRunes)
+	line("- category name: at most %d characters", d.Limits.CategoryNameRunes)
 	line("- reminders per event: at most %d", d.Limits.RemindersPerEvent)
 	line("- `q`: at most %d characters", d.Limits.SearchRunes)
 	line("- `limit`: 0 to %d", d.Limits.MaxPageSize)

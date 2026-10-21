@@ -3,13 +3,14 @@ import FullCalendar from '@fullcalendar/react'
 import type { DateSelectArg, DatesSetArg, EventClickArg } from '@fullcalendar/core'
 import type { DateClickArg } from '@fullcalendar/interaction'
 
-import { ApiError, getEvent, listEvents, type ApiEvent } from './api'
+import { ApiError, getEvent, listCategories, listEvents, type ApiCategory, type ApiEvent } from './api'
 import { draftForRange, draftFromEvent, type EventDraft } from './eventMapping'
 import { BROWSER_TZ } from './time'
 import { readEditUnlocked, saveEditUnlocked } from './theme'
 import { CalendarPane } from './components/CalendarPane'
 import { EventDialog } from './components/EventDialog'
 import { Sidebar } from './components/Sidebar'
+import { SettingsDialog } from './components/SettingsDialog'
 
 /** How long a success notice stays on screen. */
 const TOAST_MS = 2600
@@ -22,6 +23,8 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [categories, setCategories] = useState<ApiCategory[]>([])
+  const [settingsOpen, setSettingsOpen] = useState(false)
   /**
    * Whether edits to existing events are unlocked.
    *
@@ -60,6 +63,27 @@ export default function App() {
     const range = rangeRef.current
     if (range) void load(range.from, range.to)
   }, [load])
+
+  // Categories are needed to colour the grid and to fill the dialog's picker, so
+  // they are loaded once up front and again whenever the list changes.
+  const loadCategories = useCallback(async () => {
+    try {
+      setCategories(await listCategories())
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.fullMessage : String(err))
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadCategories()
+  }, [loadCategories])
+
+  // A category change affects what is already on screen: a renamed or
+  // recoloured category has to reach the grid, and a deleted one moves events.
+  const handleCategoriesChanged = useCallback(() => {
+    void loadCategories()
+    refresh()
+  }, [loadCategories, refresh])
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -166,6 +190,7 @@ export default function App() {
         onNew={handleNew}
         editUnlocked={editUnlocked}
         onEditUnlockedChange={setEditUnlocked}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="mc-main">
@@ -181,6 +206,7 @@ export default function App() {
         <div className="mc-calendar" data-loading={loading ? 'true' : 'false'}>
           <CalendarPane
             events={events}
+            categories={categories}
             calendarRef={calendarRef}
             onDatesSet={handleDatesSet}
             onEventClick={handleEventClick}
@@ -191,7 +217,20 @@ export default function App() {
       </main>
 
       {dialogDraft && (
-        <EventDialog draft={dialogDraft} onClose={() => setDialogDraft(null)} onSaved={handleSaved} />
+        <EventDialog
+          draft={dialogDraft}
+          categories={categories}
+          onClose={() => setDialogDraft(null)}
+          onSaved={handleSaved}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsDialog
+          categories={categories}
+          onClose={() => setSettingsOpen(false)}
+          onChanged={handleCategoriesChanged}
+        />
       )}
 
       {toast && <div className="mc-toast" role="status">{toast}</div>}

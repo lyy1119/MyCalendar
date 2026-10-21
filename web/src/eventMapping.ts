@@ -10,7 +10,7 @@
  */
 
 import type { EventInput as FullCalendarEventInput } from '@fullcalendar/core'
-import type { ApiEvent, EventInput } from './api'
+import type { ApiCategory, ApiEvent, EventInput } from './api'
 import {
   fromUnixSeconds,
   toDateOnly,
@@ -51,6 +51,8 @@ export interface EventDraft {
   end: string
   isTask: boolean
   isCompleted: boolean
+  /** The event's single category. */
+  categoryID: number
   /**
    * Reminder times as `datetime-local` strings, in the order they are shown.
    *
@@ -79,8 +81,48 @@ export function draftStart(draft: EventDraft): Date | null {
   return draft.isAllDay ? parseDateOnly(draft.eventDate) : parseDateTimeLocal(draft.start)
 }
 
+/**
+ * Picks black or white text for a background colour, by luminance.
+ *
+ * The category colours are chosen by the user, so they can be anything from
+ * near-white to near-black; picking the text colour blindly would make half of
+ * them unreadable.
+ */
+export function readableTextOn(hex: string): string {
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim())
+  if (!match) return '#ffffff'
+  let digits = match[1]
+  if (digits.length === 3) {
+    digits = digits
+      .split('')
+      .map((c) => c + c)
+      .join('')
+  }
+  const channel = (i: number) => parseInt(digits.slice(i * 2, i * 2 + 2), 16) / 255
+  const [r, g, b] = [channel(0), channel(1), channel(2)].map((v) =>
+    v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4,
+  )
+  // Rec. 709 relative luminance.
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return luminance > 0.45 ? '#202124' : '#ffffff'
+}
+
+/** The background, border and text colours for an event, if any. */
+function eventColors(event: ApiEvent, categories: Map<number, ApiCategory>) {
+  // Tasks keep their own look -- teal, and bright green when done -- because
+  // their colour carries state rather than a grouping.
+  if (event.is_task) return {}
+  const color = categories.get(event.category_id)?.color
+  if (!color) return {}
+  return {
+    backgroundColor: color,
+    borderColor: color,
+    textColor: readableTextOn(color),
+  }
+}
+
 /** Build a FullCalendar event from an API event. */
-export function toCalendarEvent(event: ApiEvent): FullCalendarEventInput {
+export function toCalendarEvent(event: ApiEvent, categories: Map<number, ApiCategory> = new Map()): FullCalendarEventInput {
   const classNames: string[] = []
   if (event.is_task) classNames.push('mc-task')
   if (event.is_completed) classNames.push('mc-done')
@@ -98,6 +140,7 @@ export function toCalendarEvent(event: ApiEvent): FullCalendarEventInput {
       allDay: true,
       classNames,
       extendedProps,
+      ...eventColors(event, categories),
     }
   }
 
@@ -115,6 +158,7 @@ export function toCalendarEvent(event: ApiEvent): FullCalendarEventInput {
     allDay: false,
     classNames,
     extendedProps,
+    ...eventColors(event, categories),
   }
 }
 
@@ -132,6 +176,7 @@ export function draftFromEvent(event: ApiEvent): EventDraft {
     end: event.end_at !== null ? toDateTimeLocal(fromUnixSeconds(event.end_at)) : '',
     isTask: event.is_task,
     isCompleted: event.is_completed,
+    categoryID: event.category_id,
     reminders: (event.reminders ?? []).map((r) => toDateTimeLocal(fromUnixSeconds(r.remind_at))),
   }
 }
@@ -150,6 +195,7 @@ export function draftForRange(start: Date, end: Date | null, allDay: boolean): E
     end: toDateTimeLocal(effectiveEnd),
     isTask: false,
     isCompleted: false,
+    categoryID: 0,
     reminders: [],
   }
 }
@@ -224,6 +270,7 @@ export function draftToInput(draft: EventDraft): DraftValidation {
     is_task: draft.isTask,
     // The server clears this anyway when the event is not a task.
     is_completed: draft.isTask ? draft.isCompleted : false,
+    category_id: draft.categoryID,
   }
 
   if (draft.isAllDay) {

@@ -6,6 +6,21 @@
  * "a day" means the same thing to the UI and to the server.
  */
 
+export interface ApiCategory {
+  id: number
+  name: string
+  color: string
+}
+
+/** The two ids the API gives a fixed meaning to. */
+export const CATEGORY_DELETED = -1
+export const CATEGORY_UNCATEGORIZED = 0
+
+export interface CategoryInput {
+  name?: string
+  color?: string
+}
+
 export interface ApiReminder {
   id: number
   event_id: number
@@ -24,6 +39,7 @@ export interface ApiEvent {
   event_date: string | null
   is_task: boolean
   is_completed: boolean
+  category_id: number
   created_at: number
   updated_at: number
   reminders: ApiReminder[]
@@ -49,6 +65,7 @@ export interface EventInput {
   event_date?: string | null
   is_task?: boolean
   is_completed?: boolean
+  category_id?: number
   /**
    * Whole-set replacement of the event's reminders. Sending [] clears them;
    * omitting the field leaves them untouched.
@@ -168,6 +185,33 @@ export function updateEvent(id: number, input: EventInput, tz: string): Promise<
   })
 }
 
+/**
+ * Delete an event, which marks it: it moves to the deleted category (id -1),
+ * leaves the calendar, and can be brought back like any other category change.
+ */
 export function deleteEvent(id: number): Promise<void> {
   return request<void>(`/api/v1/events/${id}`, { method: 'DELETE' })
+}
+
+/** Destroy an event for good, reminders included. There is no way back. */
+export function removeEvent(id: number): Promise<void> {
+  return request<void>(`/api/v1/events/${id}/remove`, { method: 'POST' })
+}
+
+/** Every category, including the seeded deleted and uncategorized rows. */
+export async function listCategories(signal?: AbortSignal): Promise<ApiCategory[]> {
+  const data = await request<{ categories?: ApiCategory[] }>('/api/v1/categories', { signal })
+  return data.categories ?? []
+}
+
+export function createCategory(input: CategoryInput): Promise<ApiCategory> {
+  return request<ApiCategory>('/api/v1/categories', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateCategory(id: number, input: CategoryInput): Promise<ApiCategory> {
+  return request<ApiCategory>(`/api/v1/categories/${id}`, { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export function deleteCategory(id: number): Promise<void> {
+  return request<void>(`/api/v1/categories/${id}`, { method: 'DELETE' })
 }

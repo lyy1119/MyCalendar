@@ -86,6 +86,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
+	// Categories. Their ids may be negative, since -1 marks an event as deleted.
+	mux.HandleFunc("GET /api/v1/categories", s.handleListCategories)
+	mux.HandleFunc("POST /api/v1/categories", s.handleCreateCategory)
+	mux.HandleFunc("/api/v1/categories", s.methodNotAllowed("GET, POST"))
+
+	mux.HandleFunc("GET /api/v1/categories/{id}", s.handleGetCategory)
+	mux.HandleFunc("PATCH /api/v1/categories/{id}", s.handlePatchCategory)
+	mux.HandleFunc("DELETE /api/v1/categories/{id}", s.handleDeleteCategory)
+	mux.HandleFunc("/api/v1/categories/{id}", s.methodNotAllowed("GET, PATCH, DELETE"))
+
+	// Removing an event for good, as opposed to DELETE, which marks it.
+	mux.HandleFunc("POST /api/v1/events/{id}/remove", s.handleRemoveEvent)
+	mux.HandleFunc("/api/v1/events/{id}/remove", s.methodNotAllowed("POST"))
+
 	// Reminder collection.
 	mux.HandleFunc("GET /api/v1/reminders", s.handleListReminders)
 	mux.HandleFunc("POST /api/v1/reminders", s.handleCreateReminder)
@@ -423,6 +437,16 @@ func parsePositiveInt(param, raw string) (int64, error) {
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil || value <= 0 {
 		return 0, apperr.Param(param, "must be a positive integer")
+	}
+	return value, nil
+}
+
+// parseSignedID reads an integer that may be negative, used for category ids:
+// -1 is the deleted marker and 0 the uncategorized fallback.
+func parseSignedID(param, raw string) (int64, error) {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, apperr.Param(param, "must be an integer")
 	}
 	return value, nil
 }

@@ -30,7 +30,7 @@ import (
 //
 // Keep it equal to the major version of the release. Migrating a database
 // happens on startup and brings it up to exactly this number.
-const FormatVersion = 1
+const FormatVersion = 2
 
 // formatVersionKey is the row in the meta table holding the stamp.
 const formatVersionKey = "format_version"
@@ -60,10 +60,46 @@ var migrations = []step{
 			return err
 		},
 	},
+	{
+		from:  1,
+		to:    2,
+		notes: "add categories, and events.category_id",
+		apply: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, categoriesSchema); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, seedCategories); err != nil {
+				return err
+			}
+			// Appended, like every added column: ALTER TABLE cannot insert.
+			_, err := tx.ExecContext(ctx,
+				`ALTER TABLE events ADD COLUMN category_id INTEGER NOT NULL DEFAULT 0`)
+			return err
+		},
+	},
 	// Next major version goes here, for example:
 	//
-	//	{from: 1, to: 2, notes: "no format change", apply: nil},
+	//	{from: 2, to: 3, notes: "no format change", apply: nil},
 }
+
+// categoriesSchema and seedCategories are used both when creating a database
+// from nothing and by the migration that introduced categories, so the two
+// paths cannot describe the table differently.
+const categoriesSchema = `
+CREATE TABLE IF NOT EXISTS categories (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL,
+    color TEXT NOT NULL
+);
+`
+
+// The two rows the application depends on. -1 marks an event as deleted, which
+// is what the delete endpoint sets, and 0 is the fallback for everything else.
+// Their ids are fixed, so later categories auto-increment from 1.
+const seedCategories = `
+INSERT OR IGNORE INTO categories (id, name, color) VALUES (-1, '删除', '#9aa0a6');
+INSERT OR IGNORE INTO categories (id, name, color) VALUES (0, '未分类', '#ffffff');
+`
 
 // currentSchema creates the schema of FormatVersion from nothing.
 //
@@ -76,6 +112,12 @@ const currentSchema = `
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL,
+    color TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -91,7 +133,9 @@ CREATE TABLE IF NOT EXISTS events (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     -- Appended by the 0->1 migration; see the note above on ordering.
-    location     TEXT
+    location     TEXT,
+    -- Appended by the 1->2 migration.
+    category_id  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS reminders (
@@ -105,6 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_events_start_at   ON events(start_at);
 CREATE INDEX IF NOT EXISTS idx_events_end_at     ON events(end_at);
 CREATE INDEX IF NOT EXISTS idx_events_event_date ON events(event_date);
 CREATE INDEX IF NOT EXISTS idx_events_flags      ON events(is_all_day, is_task, is_completed);
+CREATE INDEX IF NOT EXISTS idx_events_category   ON events(category_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_event   ON reminders(event_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_at      ON reminders(remind_at);
 `
@@ -135,7 +180,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 
 	if *stamp == FormatVersion {
-		return nil
+		// Nothing to migrate, but the two built-in categories are part of the
+		// API contract rather than user data: -1 is what deleting writes and 0
+		// is what every new event starts in. A database that lost them (an
+		// interrupted upgrade, a hand-edited file) would leave every event
+		// pointing at an id no lookup can resolve, so repair it. INSERT OR
+		// IGNORE keeps any renaming or recolouring the user did to those rows.
+		return s.ensureSeedCategories(ctx)
 	}
 	if *stamp > FormatVersion {
 		return fmt.Errorf(
@@ -224,11 +275,26 @@ func (s *Store) createCurrent(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, currentSchema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
+	// A fresh database needs the seed rows too. Only the migration seeded them
+	// at first, which left new databases with an empty categories table and
+	// every default category_id pointing at nothing.
+	if _, err := tx.ExecContext(ctx, seedCategories); err != nil {
+		return fmt.Errorf("seed categories: %w", err)
+	}
 	if err := setFormatVersion(ctx, tx, FormatVersion); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit schema creation: %w", err)
+	}
+	return nil
+}
+
+// ensureSeedCategories inserts the built-in categories if they are missing.
+// Idempotent, so it runs on every startup.
+func (s *Store) ensureSeedCategories(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, seedCategories); err != nil {
+		return fmt.Errorf("restore the built-in categories: %w", err)
 	}
 	return nil
 }

@@ -42,6 +42,68 @@ CREATE INDEX IF NOT EXISTS idx_events_start_at ON events(start_at);
 PRAGMA user_version = 1;
 `
 
+// v1Schema is the schema v1.1.2 left behind: the meta stamp exists and location
+// has been appended, but there are no categories and no category_id.
+const v1Schema = `
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id           INTEGER PRIMARY KEY,
+    title        TEXT    NOT NULL,
+    notes        TEXT,
+    start_at     INTEGER NOT NULL,
+    end_at       INTEGER,
+    is_all_day   INTEGER NOT NULL DEFAULT 0,
+    event_date   TEXT,
+    is_task      INTEGER NOT NULL DEFAULT 0,
+    is_completed INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    location     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY,
+    event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    remind_at  INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_start_at ON events(start_at);
+INSERT INTO meta (key, value) VALUES ('format_version', '1');
+`
+
+// makeV1Database writes a database shaped like the v1 major version.
+func makeV1Database(t *testing.T, withEvent bool) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "v1.db")
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open v1 database: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(v1Schema); err != nil {
+		t.Fatalf("create v1 schema: %v", err)
+	}
+	if withEvent {
+		_, err = db.Exec(
+			`INSERT INTO events (title, notes, location, start_at, end_at, is_task, is_completed, created_at, updated_at)
+			 VALUES ('来自 v1', '旧备注', '旧地点', 1773205200, 1773208800, 1, 0, 1000, 1000)`)
+		if err != nil {
+			t.Fatalf("seed v1 event: %v", err)
+		}
+		if _, err := db.Exec(`INSERT INTO reminders (event_id, remind_at, created_at) VALUES (1, 1773205000, 1000)`); err != nil {
+			t.Fatalf("seed v1 reminder: %v", err)
+		}
+	}
+	return path
+}
+
 // makeLegacyDatabase writes a v0.1.0-shaped database and returns its path.
 func makeLegacyDatabase(t *testing.T, withEvent bool) string {
 	t.Helper()
@@ -94,9 +156,24 @@ func TestFreshDatabaseIsStampedWithTheCurrentFormat(t *testing.T) {
 	}
 }
 
-func TestUpgradeFromV0Database(t *testing.T) {
+// The v0 shape is two major versions behind, so the one-major-at-a-time rule
+// refuses it: the v1 release has to be run in between.
+func TestUpgradeFromV0IsRefused(t *testing.T) {
 	ctx := context.Background()
 	path := makeLegacyDatabase(t, true)
+
+	_, err := Open(ctx, path)
+	if err == nil {
+		t.Fatal("Open upgraded a v0 database straight to the current format")
+	}
+	if !strings.Contains(err.Error(), "one major version at a time") {
+		t.Errorf("error does not explain the rule: %v", err)
+	}
+}
+
+func TestUpgradeFromV1Database(t *testing.T) {
+	ctx := context.Background()
+	path := makeV1Database(t, true)
 
 	st, err := Open(ctx, path)
 	if err != nil {
@@ -117,11 +194,14 @@ func TestUpgradeFromV0Database(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEvent after upgrade: %v", err)
 	}
-	if ev.Title != "来自旧版本" || ev.Notes == nil || *ev.Notes != "旧备注" {
+	if ev.Title != "来自 v1" || ev.Notes == nil || *ev.Notes != "旧备注" {
 		t.Errorf("existing data changed during upgrade: %+v", ev)
 	}
-	if ev.Location != nil {
-		t.Errorf("location = %v, want nil for a row that predates the column", ev.Location)
+	if ev.Location == nil || *ev.Location != "旧地点" {
+		t.Errorf("location = %v, want the migrated row to keep 旧地点", ev.Location)
+	}
+	if ev.CategoryID != CategoryUncategorized {
+		t.Errorf("category_id = %d, want the migrated row to land in uncategorized", ev.CategoryID)
 	}
 	if len(ev.Reminders) != 1 {
 		t.Errorf("reminders = %d, want the migrated row's reminder", len(ev.Reminders))
@@ -142,7 +222,7 @@ func TestUpgradeFromV0Database(t *testing.T) {
 // Migrating twice must be a no-op: every start runs the check.
 func TestUpgradeIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	path := makeLegacyDatabase(t, true)
+	path := makeV1Database(t, true)
 
 	for attempt := 1; attempt <= 3; attempt++ {
 		st, err := Open(ctx, path)
@@ -157,6 +237,72 @@ func TestUpgradeIsIdempotent(t *testing.T) {
 			t.Errorf("attempt %d: format version = %d", attempt, version)
 		}
 		st.Close()
+	}
+}
+
+// The built-in categories are API contract, not user data, so a database that
+// lost them is repaired on the next start instead of leaving every event
+// pointing at an id that no lookup can resolve.
+func TestBuiltInCategoriesAreRestored(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	path := st.Path()
+	st.Close()
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM categories`); err != nil {
+		t.Fatalf("empty the categories: %v", err)
+	}
+	db.Close()
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reopened.Close()
+
+	categories, err := reopened.ListCategories(ctx)
+	if err != nil {
+		t.Fatalf("ListCategories: %v", err)
+	}
+	if len(categories) != 2 {
+		t.Fatalf("categories = %d, want the two built-in rows back", len(categories))
+	}
+	if categories[0].ID != CategoryDeleted || categories[1].ID != CategoryUncategorized {
+		t.Errorf("restored ids = %d, %d", categories[0].ID, categories[1].ID)
+	}
+}
+
+// A rename of a built-in category is user intent and must survive the repair.
+func TestRestoringBuiltInCategoriesKeepsRenames(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	path := st.Path()
+
+	renamed, err := st.UpdateCategory(ctx, CategoryDeleted, "已删除", "#9aa0a6")
+	if err != nil {
+		t.Fatalf("UpdateCategory: %v", err)
+	}
+	if renamed.Name != "已删除" {
+		t.Fatalf("name = %q", renamed.Name)
+	}
+	st.Close()
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reopened.Close()
+
+	category, err := reopened.GetCategory(ctx, CategoryDeleted)
+	if err != nil {
+		t.Fatalf("GetCategory: %v", err)
+	}
+	if category.Name != "已删除" {
+		t.Errorf("name after restart = %q, want the rename to survive", category.Name)
 	}
 }
 
@@ -251,7 +397,7 @@ func TestMigratedSchemaMatchesFreshSchema(t *testing.T) {
 	}
 	defer fresh.Close()
 
-	migrated, err := Open(ctx, makeLegacyDatabase(t, false))
+	migrated, err := Open(ctx, makeV1Database(t, false))
 	if err != nil {
 		t.Fatalf("Open legacy: %v", err)
 	}

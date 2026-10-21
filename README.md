@@ -2,7 +2,7 @@
 
 一个面向内网自部署的日历服务：Go 后端 + React 前端，SQLite 存储，单个二进制即可运行。
 
-设计目标是个人自用：**不做任何鉴权**，专注把事情做对——日程的增删改查、按日/周/月查询、以及正确的时区处理。数据模型只有 `events` 和 `reminders` 两张表。
+设计目标是个人自用：**不做任何鉴权**，专注把事情做对——日程的增删改查、按日/周/月查询、分类着色、以及正确的时区处理。数据模型是三张表：`events`、`reminders`、`categories`。
 
 > **安全提示**：本服务没有任何鉴权，所有接口都是公开的。请只监听在可信网络（或 `127.0.0.1`），对外暴露时务必在前面加一层带鉴权的反向代理。
 
@@ -36,12 +36,14 @@
    **提醒（reminders）既可随日程整体写入，也可通过独立接口单独增删改查**。
 4. **时区处理**：存储与解释解耦，`tz` 参数按请求决定"这一天"的边界。
 5. **提醒（reminders）**：独立的增删改查接口，可随日程整体写入，但**不发送**任何通知。
-6. **数据库自动迁移**：启动时检查格式版本并按主版本迁移，只支持逐个大版本升级，**详见[版本与数据迁移](#版本与数据迁移)**。
-7. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
+6. **分类（categories）**：独立的分类表与接口，日程只存 `category_id`，**一个日程只属于一个分类**。内置 `-1 删除`（灰色）与 `0 未分类`（白色）两个受保护分类（不可删除、可改名改色），其余 id 自增。改分类的名称或颜色，属于它的日程一起变——日程里存的是 id，不是颜色。
+7. **"删除"是标记，"移除"才是真删**：`DELETE /api/v1/events/{id}` 把日程的分类改成 `-1`（可恢复，仍可按 id 读到），`POST /api/v1/events/{id}/remove` 才会真正把行连同提醒一起毁掉。两者边界清晰，误点删除不会丢数据。
+8. **数据库自动迁移**：启动时检查格式版本并按主版本迁移，只支持逐个大版本升级，**详见[版本与数据迁移](#版本与数据迁移)**。
+9. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
 
-**前端**：React + FullCalendar，参考 Google Calendar 的深色版式，包含「4 天」与「周」两种视图、置顶的全天日程行、可滚动时间网格，点击日程即可编辑。
+**前端**：React + FullCalendar，参考 Google Calendar 的深色版式，包含「4 天」与「周」两种视图、置顶的全天日程行、可滚动时间网格，点击日程即可编辑，侧栏齿轮里管理分类。
 
-不包含（有意为之）：提醒推送、单独提醒接口、重复日程、跨多天的全天事件、鉴权/多用户、全文检索。
+不包含（有意为之）：提醒推送、重复日程、跨多天的全天事件、鉴权/多用户、全文检索、回收站视图（删除的日程能按分类查出来，但没有批量恢复的界面）。
 
 ---
 
@@ -140,8 +142,21 @@ curl -s 'http://127.0.0.1:8080/api/v1/events?range=month&date=2026-03-11&tz=Asia
 curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
   -H 'Content-Type: application/json' -d '{"is_completed":true}'
 
-# 删除
+# "删除"：标记为删除（分类改成 -1），仍可按 id 读到，也能恢复
 curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1'
+
+# 恢复：把分类改回去（0 = 未分类）
+curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
+  -H 'Content-Type: application/json' -d '{"category_id":0}'
+
+# 真正移除：行和它的提醒一起删掉，不可恢复
+curl -s -X POST -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1/remove'
+
+# 新建分类，把日程放进去
+curl -s -X POST 'http://127.0.0.1:8080/api/v1/categories' \
+  -H 'Content-Type: application/json' -d '{"name":"工作","color":"#4f8cff"}'
+curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
+  -H 'Content-Type: application/json' -d '{"category_id":1}'
 ```
 
 ---
@@ -212,14 +227,20 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | GET | `/api/v1/events` | 按日/周/月或自定义区间查询 |
 | GET | `/api/v1/events/{id}` | 查询单个日程（含提醒） |
 | PATCH | `/api/v1/events/{id}` | 部分更新 |
-| DELETE | `/api/v1/events/{id}` | 删除日程（级联删除提醒） |
+| DELETE | `/api/v1/events/{id}` | "删除"：把日程标记为删除（分类改 `-1`），可恢复 |
+| POST | `/api/v1/events/{id}/remove` | 真正移除日程（行与提醒一起删，不可恢复） |
 | GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它） |
 | POST | `/api/v1/reminders` | 给已存在的日程添加提醒 |
 | GET | `/api/v1/reminders/{id}` | 查询单个提醒 |
 | PATCH | `/api/v1/reminders/{id}` | 修改提醒时间 |
 | DELETE | `/api/v1/reminders/{id}` | 删除单个提醒（不动日程） |
+| GET | `/api/v1/categories` | 列出全部分类（含内置的 `-1`、`0`） |
+| POST | `/api/v1/categories` | 新建分类，id 自增且从 1 开始 |
+| GET | `/api/v1/categories/{id}` | 查询单个分类 |
+| PATCH | `/api/v1/categories/{id}` | 改分类的名称或颜色（内置分类也允许改） |
+| DELETE | `/api/v1/categories/{id}` | 删除分类，其下的日程移回未分类（0）；`-1`/`0` 返回 409 |
 
-日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed` 与 `reminders`；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
+日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed`、`category_id` 与 `reminders`；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
 
 时间戳的**输入**有三种等价写法，**存储**始终是 UTC 基准的 Unix 秒，不会因为你用哪种写法而改变：
 
@@ -251,7 +272,11 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | 提醒时间 | 弹窗内可增、改、删多个提醒；另有「提前 5/10/30 分钟、1 小时、1 天」快捷档位，按日程开始时间算出绝对时间填入 |
 | 外观 | 自动 / 亮色 / 暗色，见下 |
 | 日程块内容 | 正常高度时从上到下是：**标题 → 时间 → 地点 → 备注**。块太矮、只放得下一行时，改成**「标题, 时间」同处一行** —— 标题在两种排布里都在最前（它决定这是哪个日程），同行时用逗号分隔，时间保证完整显示（被截断的时间没有意义），由标题承担省略号截断；此时地点与备注不显示。全程不撑开日程块——块的大小由时长决定，放不下的整行裁掉而不是把文字压扁。全天日程是单行横条，地点与标题并排、备注不显示 |
-| 完成的任务 | 亮绿色（`#34d399`）低透明度填充 + 同色左边条 + 删除线，既不刺眼又一眼可辨 |
+| 分类着色 | 日程块用**所属分类的颜色**做**不透明**填充（不是半透明），文字颜色按填充色的相对亮度自动取深/浅，保证任何颜色下都看得清 |
+| 任务例外 | `is_task` 的日程**不跟随分类颜色**：未完成是青绿色（`var(--mc-task-*)`）半透明填充，完成后是亮绿色（`#34d399`）低透明度填充 + 同色左边条 + 删除线，既不刺眼又一眼可辨 |
+| 分类设置（齿轮） | 侧栏「新建日程」旁的齿轮打开设置弹窗：列出全部分类，可改名称与颜色（原生取色器，落库为 `#rrggbb`）、可新增、可删除非内置分类。删除日程所在分类时，日程移回未分类而不是跟着消失 |
+| 编辑弹窗的分类 | 「分类」下拉框选择归属；被"删除"过的日程会显示「已删除」一项，改成别的分类即等于恢复 |
+| 删除 vs 永久移除 | 弹窗底部的「删除」只是把日程移到「已删除」（确认框里也这么写），可恢复；只有已经处于「已删除」的日程才多出一个「永久移除」，它调 `POST /api/v1/events/{id}/remove`，连提醒一起删掉。破坏性按钮因此不会在正常流程里出现 |
 | 编辑开关 | 左侧「外观」下方的开关，默认锁定；锁定时点击已保存的日程不会打开编辑框，但「新建日程」始终可用 |
 | 滚动条 | 时间网格的纵向滚动条已隐藏（滚轮/触控板/键盘仍可滚动），避免它紧贴最后一天列显得像网格的一部分 |
 | 新建 | 在网格空白处**拖选**时间段，或点击全天行，或点侧栏「新建日程」 |
@@ -280,6 +305,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | API | `start_at`/`end_at` 为 Unix 秒；全天日程用 `event_date`（`YYYY-MM-DD`）定位 |
 | FullCalendar | 定时日程用 `Date` 对象，全天日程用日期字符串 |
 | 编辑弹窗 | 原生 `datetime-local` / `date` 输入框的字符串 |
+| 分类 | 三侧都只传 `category_id`；名称与颜色由 `GET /api/v1/categories` 单独取一次，在内存里按 id 查表 |
 
 全天开关与 `event_date` 联动（与服务端规则一致）：打开全天则用日期、丢掉时间；关闭全天则把日期还原成 09:00–10:00，而不是午夜。
 
@@ -288,6 +314,8 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 ### 外观
 
 左上侧栏「说明」下方有外观切换：**自动 / 亮色 / 暗色**。自动模式下跟随系统的 `prefers-color-scheme`，并且系统切换时会实时跟随（不只是加载时读一次）；选择会记在 `localStorage`。
+
+分类颜色不在这套变量里：它由用户决定，所以是 FullCalendar 直接写在日程块上的行内样式（`backgroundColor` / `borderColor` / `textColor`）。文字颜色不是写死的白或黑，而是按背景色的相对亮度（Rec.709）算出来的——浅色分类用深色字，深色分类用浅色字，否则白字压在白底分类上就什么都看不见。任务的青绿/亮绿仍然走 `--mc-task-*` / `--mc-done-*` 变量，因为它是"任务"这个身份的视觉信号，跟分类是两个维度。
 
 实现上，两套配色都写成 `data-theme` 属性选择器下的 CSS 变量，由 JS 解析出最终主题后写到根元素上。`index.html` 里有一段同步执行的内联脚本做同样的解析，**在首次绘制前**就把属性设好，否则刷新时会闪一下错误的配色。
 
@@ -379,6 +407,27 @@ start_at < :range_end AND COALESCE(end_at, start_at + 1) > :range_start
 
 `remind_at` 是**绝对瞬时**，和 `start_at` 一样接受三种写法（Unix 秒 / 带偏移的 RFC3339 / 不带偏移的本地时间按 `tz` 解释）。API **没有**"提前 N 分钟"这种相对写法——那是 UI 的便利，界面上提供了几个常用档位，实际提交的仍是算好的绝对时间。删除日程时提醒通过 `ON DELETE CASCADE` 一并删除；删除提醒不影响日程。
 
+### 7. 分类、软删除与真删除
+
+分类是一张独立的表，日程上只有一个 `category_id` 外键。**一个日程只能属于一个分类**——没有多对多，也没有"标签"这一层；需要多个维度时用颜色之外的东西（备注、标题前缀），而不是放宽这里。
+
+两个内置分类是这套设计的地基，它们不是"普通数据"，而是**枚举值**：
+
+| id | 名称 | 颜色 | 含义 |
+|---|---|---|---|
+| `-1` | 删除 | `#9aa0a6` | 被"删除"的日程。留在表里，任何区间查询默认都看不到它 |
+| `0` | 未分类 | `#ffffff` | 新建日程的默认分类 |
+
+因此有三个必须守住的不变式：
+
+1. **"删除"是一次普通的分类赋值。** `DELETE /api/v1/events/{id}` 的行为就是把 `category_id` 写成 `-1`，与 `PATCH {"category_id": -1}` 完全等价——两者都会走到同一个服务层函数。恢复同理，把它改成别的分类即可。
+2. **默认隐藏，但可以显式要。** 所有区间查询与单个查询默认过滤 `category_id <> -1`；想看到删除的日程，用 `include_deleted=true`，或者直接指定 `category_id=-1`（**显式指定的分类优先于默认隐藏**，否则 `category_id=-1` 会返回空集，是个很隐蔽的坑）。
+3. **`-1` 和 `0` 删不掉。** 一旦删掉这两个 id，所有"删除"和"未分类"的语义就塌了，所以 `DELETE /api/v1/categories/-1` 返回 409 `category_protected`。但它们的**名称和颜色可以改**（有人就是想把删除色改成红灰）——受保护的是 id 的语义，不是它的外观。
+
+删除一个普通分类时，其下日程在**同一个事务里**被移回 `0`，而不是级联删除。理由很直接：用户想删的是"这个分类"，不是"这个分类里的日程"。
+
+真正把行毁掉只有一个入口：`POST /api/v1/events/{id}/remove`。它走 `DELETE FROM events`，提醒靠 `ON DELETE CASCADE` 跟着消失。**没有批量移除接口**——破坏性操作保持一条一条来。
+
 ---
 
 ## Docker 部署
@@ -443,32 +492,31 @@ docker compose up -d --build                          # 拉不到就本地编译
 
 ### 镜像发布（CI）
 
-`.github/workflows/release.yml` 在每次推送到 `main` 时自动完成：跑测试 → 算出下一个版本号 → 构建镜像推到 ghcr.io → 打 git tag → 建 GitHub Release。
+`.github/workflows/release.yml` **只在打 tag 时发版**，推送到 `main` 只跑测试：
 
-**版本号是自动的**：`.github/scripts/next-version.sh` 读取仓库里已有的稳定 `vX.Y.Z` tag，**把第三位 +1**（`v0.1.2` → `v0.1.3`）。没有任何 tag 时从 `v0.1.0` 起步——项目还没到 1.0，凭空做 patch 递进会误导。只认稳定的 `vX.Y.Z`，预发布和随手打的 tag（比如 `v2`、`v0.11.0-beta`）会被忽略，免得它们把版本号带偏。
+| 触发 | 做什么 |
+|---|---|
+| push 到 `main` | `go vet` + `go test` + 前端类型检查与打包。**不打 tag、不算版本号、不发版** |
+| push tag `v1.2.3` | 上面那些 + 构建镜像推 ghcr.io + 构建免安装可执行文件 + 针对该 tag 建 GitHub Release |
 
-> 有个坑值得说明：`git tag --sort=-v:refname` 会把 `v2`、`v0.11.0-beta`、`v0.10.1-rc.1` 排在稳定的 `v0.10.0` **前面**，所以脚本必须先用正则过滤再取第一条，否则会拿 `v2` 去算。这一条已用一组 tag 状态实测过。
+**版本号就是 tag 名，由你决定。** workflow 从 `github.ref_name` 里去掉 `v` 取版本号，并要求它形如 `X.Y.Z`；不合格的 tag 直接失败，不会凑一个版本出来。CI **不会自己创建 tag**，所以发布节奏完全由你掌握：
 
-镜像标签有三种：`<版本号>`（如 `0.1.3`）、`latest`、`sha-<短哈希>`。`latest` 始终指向 main 上最新的一次发布。
+```bash
+# 本地测完、确认没问题再发
+git tag v1.2.0
+git push origin v1.2.0
+
+# 发错了就删了重打（先删 release 再删 tag）
+gh release delete v1.2.0 --yes
+git push origin :refs/tags/v1.2.0
+git tag -d v1.2.0
+```
+
+镜像标签有三种：`<版本号>`（如 `1.2.0`）、`latest`、`sha-<短哈希>`。`latest` 指向最新一次发布。
 
 每个 release 同时附带 Linux 与 Windows 的免安装可执行文件，见[直接运行二进制](#直接运行二进制)。它们与容器镜像用同一份源码、同一次构建产出。
 
-**主动指定递进哪一位**（比如改了大版本要发 `v1.0.0`）：
-
-| 方式 | 用法 |
-|---|---|
-| 提交信息里写标记 | `[major]` / `[minor]` / `[patch]`，取提交信息里第一个出现的 |
-| Actions 页面手动触发 | workflow_dispatch，选 patch / minor / major（它的优先级高于提交信息里的标记） |
-
-```bash
-# 例如把当前版本切成下一个大版本
-git commit --allow-empty -m "Release v1.0.0 [major]"
-git push
-```
-
-**不想为某次提交发版**：提交信息里写 `[skip release]`，测试照跑，只是不发版（它优先于 bump 标记）。
-
-> 注意：`[major]` 这类标记只影响**版本号怎么算**，它不会替你改数据库迁移。改大版本时该动的迁移仍然要自己改，见下面「版本与数据迁移」。
+> 版本号由 tag 决定，所以**升主版本意味着打一个新主版本的 tag**；它不会替你改数据库迁移。改大版本时该动的迁移仍然要自己改，见下面「版本与数据迁移」。
 
 部署时用发布出来的镜像即可，不需要在目标机器上编译：
 
@@ -485,7 +533,7 @@ docker run -d --name mycalendar -p 8080:8080 -v mycalendar-data:/data \
 
 只构建 amd64。要覆盖 Raspberry Pi 或 arm 的 NAS，在 workflow 的 `platforms:` 里加上 `linux/arm64` 即可——能work，只是 Go 编译会在模拟下跑，构建时间翻倍。
 
-> 自动递增意味着**每次推 main 都会发一个版本**。对这个项目是合适的（一次提交一个可回溯的镜像）；若你更想要「只有显式打 tag 才发版」，把 workflow 里的 `on:` 改成 `push: tags: ['v*']`、并去掉自动算版本那一步即可。
+> 推 main 不发版，所以要更新这个 `latest` 就得打一个 tag。这是刻意的：镜像动起来的那一刻，必然对应一个你决定发布的版本。
 
 ### 构建时连不上网
 
@@ -630,7 +678,7 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 
 ### 版本号的含义
 
-版本号是 `主.次.补丁`。补丁号由 CI 在每次推送到 main 时自动 +1（见「镜像发布（CI）」），主版本号手动决定。
+版本号是 `主.次.补丁`，**完全由你打的 tag 决定**（见「镜像发布（CI）」）。CI 不递增、不猜测，推 main 安静地只跑测试。
 
 **规则：只要改动了数据库格式，就必须升主版本号。** 反过来不成立——有时候只是改了 API 也会升主版本，那种情况下**不需要写迁移**。
 
@@ -657,7 +705,7 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 1. 打开数据库，读 `meta` 表里的 `format_version`
 2. 没有这个表或没有这个值 → 认为是很久以前（`v1.0.0` 之前）写的库，格式按 `0` 处理
 3. 比当前版本旧 → 执行对应迁移，**每一步都在一个事务里完成，并同时更新版本号**；中途断电或被杀，下次启动会从原状态重来，不会留下半迁移的库
-4. 等于当前版本 → 什么都不做（所以每次启动都会检查，重复启动是安全的）
+4. 等于当前版本 → 什么都不做（所以每次启动都会检查，重复启动是安全的）；唯一例外是补回内置分类：`-1 删除` 与 `0 未分类` 属于 API 契约而不是用户数据，万一库里没有它们（迁移被打断、手工改过文件），启动时会用 `INSERT OR IGNORE` 补回，你给它们改过的名字和颜色不受影响
 5. 比当前版本新 → 拒绝启动，提示你升级服务端而不是降级
 
 数据库格式版本与当前二进制的对应关系写在 `internal/store/migrate.go` 顶部的注释里。
@@ -668,7 +716,7 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 
 ```go
 // FormatVersion 必须与发布的主版本号保持一致
-const FormatVersion = 1
+const FormatVersion = 2
 
 // migrations[i] 把格式从 i 升到 i+1
 var migrations = []step{
@@ -676,10 +724,17 @@ var migrations = []step{
         _, err := tx.ExecContext(ctx, `ALTER TABLE events ADD COLUMN location TEXT`)
         return err
     }},
+    {from: 1, to: 2, notes: "add categories, and events.category_id", apply: func(ctx, tx) error {
+        // categoriesSchema / seedCategories 与"全新库"共用同一份定义，
+        // 所以迁移来的库和新建的库不可能长成两个样子
+        return nil
+    }},
     // 下一个主版本写在这里。格式没变就留空 apply：
-    // {from: 1, to: 2, notes: "no format change", apply: nil},
+    // {from: 2, to: 3, notes: "no format change", apply: nil},
 }
 ```
+
+上一步（格式 1 → 2）是分类那次的迁移，可以当作写迁移的模板：`categoriesSchema` 与 `seedCategories` 同时被"建全新库"和"升旧库"两条路径调用，**同一条 SQL 只写一次**，两边因此天然一致。内置分类的种子数据也走这条路径，所以老库升级后同样有 `-1` 和 `0`。
 
 升主版本时：
 
@@ -720,13 +775,15 @@ cd web && npm run build       # 前端构建
 - **PATCH 语义**：缺省/置空/赋值三态、`{}` 空操作、全天与定时相互转换、`created_at` 不变而 `updated_at` 刷新。
 - **校验**：标题与备注长度上限（按字符计，CJK 友好）、提醒数量上限与去重排序、时间戳越界与"毫秒当成秒"的识别提示、非法 `tz`/`range`/`date`/`from,to` 组合。
 - **HTTP 层**：状态码与错误信封、未定义字段拒绝、带 `Allow` 头的 405、未知路径的 JSON 404、CORS 预检、`/help` 文档与实际路由及限额一致。
+- **分类**：内置 `-1`/`0` 的种子与保护（删除返回 409）、名称长度与颜色格式（`#abc` 规范化为 `#aabbcc`、`blue` 被拒）、删分类把其下日程移回 0、`-1` 与 `DELETE` 的等价性、`include_deleted` 与 `category_id=-1` 的查询优先级、`/remove` 之后按 id 查不到。
+- **迁移**：格式 0 → 1 → 2 的真实升级，`v1` 库升到 `v2` 后分类齐全、日程全部落到 0、备注/地点/任务/提醒都不丢；"全新库"与"迁移来的库"列集合与顺序必须一致；跨主版本跳级会被拒绝。
 - **并发**：24 个 goroutine 并发写入不出现 `database is locked`。
 - **前端路由**：`/` 归前端、未知 `/api/*` 仍返回 JSON 404、API 路径不会被 SPA 吞掉。
 - **浏览器时区一致性**：日期表头显示的日子必须与列实际的日期一致；请求窗口必须是浏览器时区的零点；弹窗里手填的墙上时间必须原样画回网格。
 
 ### 浏览器端验证（可选）
 
-`web/e2e/verify.mjs` 用 Playwright 打开真实页面并断言那些单元测试看不到的东西：4 天视图确实是 4 列、周视图确实是 7 列、全天日程**在滚动区之外且位于时间网格上方**、各天列共用同一个滚动区、点击日程弹出并预填编辑框、保存/完成任务/拖选新建/全天行新建/删除都真正落库、以及整轮没有 console 报错。用法见 `web/e2e/README.md`；它需要额外下载浏览器，**不参与常规构建**，且运行前会清空 ±90 天内的日程，请只对测试库使用。
+`web/e2e/verify.mjs` 用 Playwright 打开真实页面并断言那些单元测试看不到的东西：4 天视图确实是 4 列、周视图确实是 7 列、全天日程**在滚动区之外且位于时间网格上方**、各天列共用同一个滚动区、点击日程弹出并预填编辑框、保存/完成任务/拖选新建/全天行新建/删除都真正落库、以及整轮没有 console 报错。分类着色（不透明填充 + 按亮度取的字色）和齿轮设置弹窗目前靠人工确认，因为断言颜色需要比对计算出的 `rgb()`，脆且不易读。用法见 `web/e2e/README.md`；它需要额外下载浏览器，**不参与常规构建**，且运行前会清空 ±90 天内的日程，请只对测试库使用。
 
 ---
 
@@ -738,16 +795,19 @@ web/                     前端源码（React + TypeScript + FullCalendar）
   ├── src/api.ts         API 客户端（时间一律 Unix 秒，附带浏览器时区）
   ├── src/eventMapping.ts API / FullCalendar / 编辑弹窗三方的字段互转
   ├── src/time.ts        时区与本地时间字符串工具
-  ├── src/components/    日历面板、编辑弹窗、侧栏
+  ├── src/components/    日历面板、编辑弹窗、侧栏、分类设置弹窗
   └── e2e/               可选的浏览器端验证
 internal/webui/          内嵌并托管前端产物（webui_embedded 构建标签）
 internal/api/            HTTP 层：路由、中间件、请求解析、错误映射
   ├── api.go             服务器装配、中间件（恢复/日志/CORS）、响应与错误信封
   ├── query.go           查询参数解析（tz、range/date、from/to、过滤、分页）
-  ├── events.go          日程各接口的处理器
+  ├── events.go          日程各接口的处理器（含软删除与 /remove）
+  ├── categories.go      分类各接口的处理器
   └── help.go            /help 文档的数据结构与 Markdown 渲染
 internal/service/        领域层：校验与规范化（"字段该如何理解"都在这里）
+  └── categories.go      分类的颜色/名称规范化，以及 -1 与 0 的保护规则
 internal/store/          SQLite 持久化：增删改查、区间查询
+  ├── categories.go      分类表的读写；删分类时把其下日程移回 0
   └── migrate.go         数据库格式版本与按主版本迁移的步骤表（改大版本时改这里）
 internal/calendar/       时区相关的日历窗口计算（日/周/月/自定义）
 internal/model/          与表结构一一对应的类型，以及 Optional / EventView
@@ -757,10 +817,13 @@ internal/apperr/         错误分类（校验错误、参数错误、未找到�
 
 数据表（与需求给定的一致；实现只额外加了索引）：
 
-- `events`：`id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at`
+- `events`：`id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, location, created_at, updated_at, category_id`
 - `reminders`：`id, event_id, remind_at, created_at`
+- `categories`：`id, name, color`（`color` 存 `#rrggbb` 文本；`-1` 删除、`0` 未分类，其余自增）
 
-索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`reminders(event_id)`、`reminders(remind_at)`。
+索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`events(category_id)`、`reminders(event_id)`、`reminders(remind_at)`。
+
+`location` 和 `category_id` 是后加的列，因为 `ALTER TABLE` 只能往表尾追加，`currentSchema` 里也把它们放在最后——否则"全新库"和"迁移来的库"列顺序不同（有一条测试专门比对两者的列集合与顺序）。
 
 数据库格式版本记在 `meta` 表的 `format_version` 上（`v1.0.0` 之前用的是 `PRAGMA user_version`，现在那个值只是历史遗留，不再读取）。迁移在启动时自动进行，每一步一个事务、与版本号同时提交，因此中途中断只会重来而不会留下半迁移的库。重复启动幂等；若数据库来自更新的版本会拒绝启动。规则与改法见[版本与数据迁移](#版本与数据迁移)。
 
@@ -775,4 +838,6 @@ SQLite 连接使用 WAL 日志模式、`busy_timeout=5000`，并为每个连接�
 - 重复日程（需要在表上增加 recurrence 规则字段）。
 - 跨多天的全天事件（需要为全天引入结束日期字段）。
 - 拖拽改期（当前刻意关闭，编辑统一走弹窗）。
-- 提醒的调度与推送界面（后端已存 `remind_at`，前端暂未展示）。
+- 回收站视图：按 `category_id=-1` 能查到删除的日程，但没有把它们列出来批量恢复的界面。
+- 分类排序与拖拽调整顺序（现在按 id 升序）。
+- 多分类/标签（当前刻意保持"一个日程一个分类"）。

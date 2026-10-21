@@ -45,6 +45,21 @@ func (o Optional[T]) MarshalJSON() ([]byte, error) {
 	return json.Marshal(o.Value)
 }
 
+// Category groups events and gives them a colour. Two ids are fixed: -1 marks
+// an event as deleted and 0 is the uncategorized fallback.
+type Category struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color"`
+}
+
+// CategoryInput is the body of the create and update endpoints. Every field is
+// optional on update.
+type CategoryInput struct {
+	Name  Optional[string] `json:"name"`
+	Color Optional[string] `json:"color"`
+}
+
 // Event is a stored calendar entry.
 type Event struct {
 	ID          int64      `json:"id"`
@@ -57,6 +72,7 @@ type Event struct {
 	EventDate   *string    `json:"event_date"`
 	IsTask      bool       `json:"is_task"`
 	IsCompleted bool       `json:"is_completed"`
+	CategoryID  int64      `json:"category_id"`
 	CreatedAt   int64      `json:"created_at"`
 	UpdatedAt   int64      `json:"updated_at"`
 	Reminders   []Reminder `json:"reminders"`
@@ -169,6 +185,7 @@ type EventInput struct {
 	EventDate   Optional[string]          `json:"event_date"`
 	IsTask      Optional[bool]            `json:"is_task"`
 	IsCompleted Optional[bool]            `json:"is_completed"`
+	CategoryID  Optional[int64]           `json:"category_id"`
 	Reminders   Optional[[]ReminderInput] `json:"reminders"`
 }
 
@@ -200,9 +217,13 @@ type EventFilter struct {
 	EndDate     string
 	IsTask      *bool
 	IsCompleted *bool
-	Query       string
-	Limit       int
-	Offset      int
+	// CategoryID keeps one category; IncludeDeleted stops the query from
+	// hiding events in the deleted category.
+	CategoryID     *int64
+	IncludeDeleted bool
+	Query          string
+	Limit          int
+	Offset         int
 }
 
 // NewEventView renders an Event in loc, adding derived local timestamps.

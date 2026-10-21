@@ -707,17 +707,45 @@ func TestDeleteEvent(t *testing.T) {
 		t.Errorf("204 response must have an empty body, got: %s", raw)
 	}
 
+	// Deleting only marks the event: it moves to the deleted category and the
+	// row stays, so it can still be read and brought back.
+	status, _, raw = h.do(http.MethodGet, path, "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET after delete status = %d, want 200 with the event still present", status)
+	}
+	if got := h.decode(raw); got["category_id"].(float64) != -1 {
+		t.Errorf("category_id = %v, want -1 after delete", got["category_id"])
+	}
+
+	// It stops appearing in range queries.
+	status, _, raw = h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-03-11&tz=UTC", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if got := h.decode(raw); got["count"].(float64) != 0 {
+		t.Errorf("a deleted event still appeared in a range query: %v", got["count"])
+	}
+
+	// Deleting again is harmless rather than a 404: the event still exists.
+	if status, _, _ = h.do(http.MethodDelete, path, "", nil); status != http.StatusNoContent {
+		t.Errorf("second DELETE status = %d, want 204", status)
+	}
+
+	// Remove is the destructive one, and only then is the event gone.
+	if status, _, _ = h.do(http.MethodPost, path+"/remove", "", nil); status != http.StatusNoContent {
+		t.Fatalf("remove status = %d, want 204", status)
+	}
 	status, _, raw = h.do(http.MethodGet, path, "", nil)
 	if status != http.StatusNotFound {
-		t.Fatalf("GET after delete status = %d, want 404", status)
+		t.Fatalf("GET after remove status = %d, want 404", status)
 	}
 	if code := errorCode(t, h.decode(raw)); code != "not_found" {
 		t.Errorf("error code = %q", code)
 	}
 
-	status, _, _ = h.do(http.MethodDelete, path, "", nil)
-	if status != http.StatusNotFound {
-		t.Errorf("second DELETE status = %d, want 404", status)
+	// Removing something gone is a 404.
+	if status, _, _ = h.do(http.MethodPost, path+"/remove", "", nil); status != http.StatusNotFound {
+		t.Errorf("second remove status = %d, want 404", status)
 	}
 }
 
@@ -985,6 +1013,57 @@ func TestHelpDocument(t *testing.T) {
 	auth, _ := doc["authentication"].(map[string]any)
 	if auth == nil || auth["required"] != false {
 		t.Errorf("authentication section = %v, want required=false", doc["authentication"])
+	}
+}
+
+// The discovery document at /api is a second, hand-written index. It is easier
+// to forget than /help, so it gets the same route check: everything it lists
+// has to be something the router really serves.
+func TestIndexDocument(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	status, _, raw := h.do(http.MethodGet, "/api", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("index status = %d", status)
+	}
+	doc := h.decode(raw)
+
+	endpoints, ok := doc["endpoints"].([]any)
+	if !ok || len(endpoints) == 0 {
+		t.Fatalf("index has no endpoints: %s", raw)
+	}
+
+	// Every resource has to appear, not just the event ones it started with.
+	listed := make(map[string]bool, len(endpoints))
+	for _, rawEndpoint := range endpoints {
+		e := rawEndpoint.(map[string]any)
+		method, _ := e["method"].(string)
+		path, _ := e["path"].(string)
+		listed[method+" "+path] = true
+
+		probe := strings.ReplaceAll(path, "{id}", "1")
+		status, _, body := h.do(method, probe, "", nil)
+		if status == http.StatusMethodNotAllowed {
+			t.Errorf("indexed endpoint %s %s is not routed", method, path)
+			continue
+		}
+		if status == http.StatusNotFound && strings.Contains(string(body), "no such endpoint") {
+			t.Errorf("indexed endpoint %s %s is not routed: %s", method, path, body)
+		}
+	}
+
+	for _, want := range []string{
+		"GET /api/v1/events",
+		"POST /api/v1/events/{id}/remove",
+		"GET /api/v1/reminders",
+		"PATCH /api/v1/reminders/{id}",
+		"GET /api/v1/categories",
+		"POST /api/v1/categories",
+		"DELETE /api/v1/categories/{id}",
+	} {
+		if !listed[want] {
+			t.Errorf("index does not list %q", want)
+		}
 	}
 }
 

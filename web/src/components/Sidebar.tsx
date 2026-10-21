@@ -24,6 +24,7 @@ interface Props {
   /** Whether editing existing events is unlocked. */
   editUnlocked: boolean
   onEditUnlockedChange: (unlocked: boolean) => void
+  onOpenSettings: () => void
 }
 
 /**
@@ -66,6 +67,7 @@ export function Sidebar({
   onNew,
   editUnlocked,
   onEditUnlockedChange,
+  onOpenSettings,
 }: Props) {
   const miniRef = useRef<FullCalendar>(null)
   const [themeMode, setThemeMode, resolvedTheme] = useTheme()
@@ -83,10 +85,21 @@ export function Sidebar({
 
   return (
     <aside className="mc-sidebar">
-      <button type="button" className="mc-new-btn" onClick={onNew}>
-        <span aria-hidden="true">＋</span>
-        <span>新建日程</span>
-      </button>
+      <div className="mc-new-row">
+        <button type="button" className="mc-new-btn" onClick={onNew}>
+          <span aria-hidden="true">＋</span>
+          <span>新建日程</span>
+        </button>
+        <button
+          type="button"
+          className="mc-gear-btn"
+          onClick={onOpenSettings}
+          aria-label="设置"
+          title="设置：分类"
+        >
+          <span aria-hidden="true">⚙</span>
+        </button>
+      </div>
 
       <div className="mc-mini">
         <FullCalendar

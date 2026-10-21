@@ -115,6 +115,20 @@ func parseFilter(r *http.Request) (model.EventFilter, error) {
 	q := r.URL.Query()
 	var f model.EventFilter
 
+	if raw := strings.TrimSpace(q.Get("include_deleted")); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return f, apperr.Param("include_deleted", "must be true or false")
+		}
+		f.IncludeDeleted = v
+	}
+	if raw := strings.TrimSpace(q.Get("category_id")); raw != "" {
+		id, err := parseSignedID("category_id", raw)
+		if err != nil {
+			return f, err
+		}
+		f.CategoryID = &id
+	}
 	if raw := strings.TrimSpace(q.Get("is_task")); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {

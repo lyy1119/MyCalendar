@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, createEvent, deleteEvent, updateEvent } from '../api'
+import {
+  ApiError,
+  CATEGORY_DELETED,
+  createEvent,
+  deleteEvent,
+  removeEvent,
+  updateEvent,
+  type ApiCategory,
+} from '../api'
 import {
   REMINDER_OFFSETS,
   draftStart,
@@ -11,6 +19,7 @@ import { BROWSER_TZ, toDateTimeLocal } from '../time'
 
 interface Props {
   draft: EventDraft
+  categories: ApiCategory[]
   onClose: () => void
   onSaved: (message: string) => void
 }
@@ -22,7 +31,7 @@ interface Props {
  * The server owns all the normalisation rules, so this form only has to send
  * the fields the user actually changed.
  */
-export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
+export function EventDialog({ draft: initialDraft, categories, onClose, onSaved }: Props) {
   const [draft, setDraft] = useState<EventDraft>(initialDraft)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -96,15 +105,41 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
     }
   }
 
+  // "Delete" marks the event: it joins the deleted category and can come back.
+  // "Remove" is the destructive one, and it is only offered on an event that
+  // has already been deleted, so it cannot be reached by accident.
+  const isDeleted = draft.categoryID === CATEGORY_DELETED
+
   const handleDelete = async () => {
     if (isNew) return
-    if (!window.confirm(`确定删除「${draft.title || '未命名'}」吗？`)) return
+    const confirmed = window.confirm(
+      `删除「${draft.title || '未命名'}」？日程会移到「已删除」，之后可以从分类里放回来。`,
+    )
+    if (!confirmed) return
 
     setBusy(true)
     setError(null)
     try {
       await deleteEvent(draft.id as number)
-      onSaved('已删除日程')
+      onSaved('已移入「已删除」')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.fullMessage : String(err))
+      setBusy(false)
+    }
+  }
+
+  const handleRemove = async () => {
+    if (isNew) return
+    const confirmed = window.confirm(
+      `永久移除「${draft.title || '未命名'}」？这条日程和它的提醒会从数据库里删掉，无法恢复。`,
+    )
+    if (!confirmed) return
+
+    setBusy(true)
+    setError(null)
+    try {
+      await removeEvent(draft.id as number)
+      onSaved('已永久移除')
     } catch (err) {
       setError(err instanceof ApiError ? err.fullMessage : String(err))
       setBusy(false)
@@ -145,6 +180,24 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
               placeholder="添加标题"
               onChange={(e) => patch({ title: e.target.value })}
             />
+          </label>
+
+          <label className="mc-field">
+            <span className="mc-field__label">分类</span>
+            <select
+              className="mc-input"
+              value={draft.categoryID}
+              onChange={(e) => patch({ categoryID: Number(e.target.value) })}
+            >
+              {/* A deleted event keeps its -1 so opening it does not silently
+                  bring it back; the option only appears in that case. */}
+              {draft.categoryID === CATEGORY_DELETED && <option value={CATEGORY_DELETED}>已删除</option>}
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="mc-field mc-field--inline">
@@ -281,6 +334,11 @@ export function EventDialog({ draft: initialDraft, onClose, onSaved }: Props) {
             {!isNew && (
               <button type="button" className="mc-btn mc-btn--danger" onClick={() => void handleDelete()} disabled={busy}>
                 删除
+              </button>
+            )}
+            {!isNew && isDeleted && (
+              <button type="button" className="mc-btn mc-btn--danger" onClick={() => void handleRemove()} disabled={busy}>
+                永久移除
               </button>
             )}
             <div className="mc-dialog__spacer" />

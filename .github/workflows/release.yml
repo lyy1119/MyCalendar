@@ -1,41 +1,28 @@
 name: Release
 
-# Every push to main publishes a release: a git tag, a GitHub release and a
-# container image on ghcr.io. The patch number increments itself, computed from
-# the tags that already exist, so nobody edits a version file by hand.
+# Releases are cut by pushing a tag, never by pushing a commit.
 #
-# How the version moves:
+#   push to main      tests only. Nothing is tagged, built or published.
+#   push tag v1.2.3   tests, builds the image and the executables, creates the
+#                     GitHub release for that tag.
 #
-#   push to main            patch bump, computed from the existing tags
-#   commit message [minor]  minor bump instead of patch
-#   commit message [major]  major bump instead of patch
-#   commit message [skip release]
-#                           publish nothing for that push; the tests still run
-#   workflow_dispatch       pick the bump by hand, which wins over the message
-#
-# A database format change always needs a major bump, so [major] is the usual way
-# to cut one without reaching for the Actions UI.
+# The version comes from the tag itself, so the tag is the decision: create it
+# when the tree is ready, and this workflow releases exactly that. It will not
+# create tags of its own, and there is nothing to remember to bump.
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: Which part of the version to increment
-        type: choice
-        default: patch
-        options: [patch, minor, major]
+    tags: ['v*']
 
 permissions:
-  contents: write # push the tag, create the release
+  contents: write # create the release for the pushed tag
   packages: write # push the image to ghcr.io
 
-# Two runs computing a version at the same time would pick the same number, so
-# releases queue rather than overlap. Queued, not cancelled: every push deserves
-# its release.
+# Two runs writing the same tag's release would race, so releases queue rather
+# than overlap. Queued, not cancelled: a tag that was pushed gets its release.
 concurrency:
-  group: release-main
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -72,12 +59,11 @@ jobs:
           npm run build
 
   version:
-    name: Next version
+    name: Version from the tag
     runs-on: ubuntu-latest
     needs: test
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      !contains(github.event.head_commit.message, '[skip release]')
+    # Releases happen on tags only, so a push to main stops after the tests.
+    if: startsWith(github.ref, 'refs/tags/v')
     outputs:
       version: ${{ steps.next.outputs.version }}
       tag: ${{ steps.next.outputs.tag }}
@@ -85,43 +71,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Tags live in history, and a shallow clone has none: the version
-          # would then look like a first release on every run.
+          # Tags live in history, and a shallow clone has none: the release notes
+          # diff against the previous tag would then silently lose its range.
           fetch-depth: 0
 
-      - name: Compute the next version
+      - name: Read the version from the tag
         id: next
         env:
-          # A manual dispatch names the bump outright; otherwise it comes from
-          # the commit message, and failing that it is a patch.
-          DISPATCH_BUMP: ${{ inputs.bump }}
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          bump="$DISPATCH_BUMP"
-          if [ -z "$bump" ]; then
-            case "$(printf '%s' "$COMMIT_MESSAGE" | grep -oE '\[(major|minor|patch)\]' | head -n 1)" in
-              '[major]') bump=major ;;
-              '[minor]') bump=minor ;;
-              '[patch]') bump=patch ;;
-              *)         bump=patch ;;
-            esac
-            echo "No dispatch input; bump '$bump' taken from the commit message"
-          else
-            echo "Bump '$bump' taken from the dispatch input"
+          # The tag is the version. Strip the "v" and require the rest to look
+          # like semver, so a stray tag cannot produce a nonsense release.
+          version="${TAG_NAME#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Tag '$TAG_NAME' is not vMAJOR.MINOR.PATCH; refusing to release it" >&2
+            exit 1
           fi
 
-          version="$(.github/scripts/next-version.sh "$bump")"
           # ghcr.io refuses uppercase in an image name, and this repository is
           # MyCalendar, so lower-case the whole path.
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           {
             echo "version=$version"
-            echo "tag=v$version"
+            echo "tag=$TAG_NAME"
             echo "image=$image"
           } >> "$GITHUB_OUTPUT"
-          echo "Publishing $version as $image:$version"
+          echo "Releasing $version as $image:$version"
 
   binaries:
     name: Build executables
@@ -241,12 +218,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Re-running the workflow must not fail on work already done.
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists, leaving it alone"
-          else
-            git tag "$TAG"
-            git push origin "$TAG"
+          # The tag was pushed by whoever cut the release; this workflow never
+          # creates one.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG is missing; it should have come from the push" >&2
+            exit 1
           fi
 
           # The previous release, with this tag itself excluded, so the notes

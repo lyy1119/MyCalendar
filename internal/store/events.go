@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	eventColumns    = `id, title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at`
+	eventColumns    = `id, title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id`
 	reminderColumns = `id, event_id, remind_at, created_at`
 
 	// reminderChunk bounds the size of an IN (...) clause; SQLite limits the
@@ -39,10 +39,10 @@ func (s *Store) CreateEvent(ctx context.Context, ev model.Event, reminders []int
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events (title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO events (title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.Title, strOrNil(ev.Notes), strOrNil(ev.Location), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
-		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.CreatedAt, ev.UpdatedAt)
+		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.CreatedAt, ev.UpdatedAt, ev.CategoryID)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("insert event: %w", err)
 	}
@@ -107,10 +107,10 @@ func (s *Store) UpdateEvent(ctx context.Context, ev model.Event, reminders []int
 	res, err := tx.ExecContext(ctx,
 		`UPDATE events
 		    SET title = ?, notes = ?, location = ?, start_at = ?, end_at = ?, is_all_day = ?,
-		        event_date = ?, is_task = ?, is_completed = ?, updated_at = ?
+		        event_date = ?, is_task = ?, is_completed = ?, updated_at = ?, category_id = ?
 		  WHERE id = ?`,
 		ev.Title, strOrNil(ev.Notes), strOrNil(ev.Location), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
-		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.UpdatedAt, ev.ID)
+		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.UpdatedAt, ev.CategoryID, ev.ID)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("update event: %w", err)
 	}
@@ -194,6 +194,19 @@ func (s *Store) ListEvents(ctx context.Context, f model.EventFilter) ([]model.Ev
 		f.End.Unix(), f.Start.Unix(),
 	)
 
+	// An event in the deleted category is still a row, but it is not on the
+	// calendar any more, so a range query leaves it out -- unless the caller
+	// asked for deleted events, or named a category outright. An explicit
+	// category_id=-1 must list them rather than being cancelled out by the
+	// clause that hides them.
+	switch {
+	case f.CategoryID != nil:
+		conds = append(conds, `category_id = ?`)
+		args = append(args, *f.CategoryID)
+	case !f.IncludeDeleted:
+		conds = append(conds, `category_id <> ?`)
+		args = append(args, CategoryDeleted)
+	}
 	if f.IsTask != nil {
 		conds = append(conds, `is_task = ?`)
 		args = append(args, boolInt(*f.IsTask))
@@ -321,7 +334,7 @@ func scanEvent(sc rowScanner) (model.Event, error) {
 	)
 	if err := sc.Scan(
 		&ev.ID, &ev.Title, &notes, &location, &ev.StartAt, &endAt, &allDay,
-		&eventDate, &task, &completed, &ev.CreatedAt, &ev.UpdatedAt,
+		&eventDate, &task, &completed, &ev.CreatedAt, &ev.UpdatedAt, &ev.CategoryID,
 	); err != nil {
 		return model.Event{}, err
 	}

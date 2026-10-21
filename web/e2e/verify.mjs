@@ -69,7 +69,9 @@ try {
   const nowSec = Math.floor(Date.now() / 1000)
   const existing = await api(`/api/v1/events?tz=${encodeURIComponent(TZ)}&from=${nowSec - 90 * 86400}&to=${nowSec + 90 * 86400}`)
   const stale = existing.body?.events ?? []
-  for (const e of stale) await api(`/api/v1/events/${e.id}`, { method: 'DELETE' })
+  // DELETE only marks an event, so the cleanup uses /remove; otherwise every
+  // run would leave a deleted row behind and the trash would grow forever.
+  for (const e of stale) await api(`/api/v1/events/${e.id}/remove`, { method: 'POST' })
   check('clean slate', true, `removed ${stale.length} pre-existing event(s)`)
 
   // -------------------------------------------------------------- seed data
@@ -405,6 +407,14 @@ try {
 
   const after = await api(`/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=${encodeURIComponent(TZ)}`)
   check('deleting removes the event', !(after.body?.events ?? []).some((e) => e.title === '新建的日程'), (after.body?.events ?? []).map((e) => e.title).join('|'))
+
+  // Deleting is a mark, not a destroy: the row is still there, in category -1.
+  const deleted = await api(
+    `/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=${encodeURIComponent(TZ)}&category_id=-1`,
+  )
+  const marked = (deleted.body?.events ?? []).find((e) => e.title === '新建的日程')
+  check('deleting keeps the row in the deleted category', marked?.category_id === -1, `category_id=${marked?.category_id}`)
+  if (marked) await api(`/api/v1/events/${marked.id}/remove`, { method: 'POST' })
 
   // ----------------------------------------------------------- navigation
 

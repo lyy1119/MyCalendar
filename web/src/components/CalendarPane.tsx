@@ -1,4 +1,4 @@
-import type { RefObject } from 'react'
+import { useMemo, type RefObject } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import type { DateSelectArg, DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core'
 import type { DateClickArg } from '@fullcalendar/interaction'
@@ -7,7 +7,7 @@ import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import zhCn from '@fullcalendar/core/locales/zh-cn'
 
-import type { ApiEvent } from '../api'
+import type { ApiCategory, ApiEvent } from '../api'
 import { toCalendarEvent } from '../eventMapping'
 import { WEEKDAY_SHORT } from '../time'
 
@@ -58,6 +58,8 @@ function eventChip(arg: EventContentArg) {
 
 interface Props {
   events: ApiEvent[]
+  /** Needed to colour each event by its category. */
+  categories: ApiCategory[]
   calendarRef: RefObject<FullCalendar | null>
   onDatesSet: (arg: DatesSetArg) => void
   onEventClick: (arg: EventClickArg) => void
@@ -76,12 +78,19 @@ interface Props {
  */
 export function CalendarPane({
   events,
+  categories,
   calendarRef,
   onDatesSet,
   onEventClick,
   onSelect,
   onDateClick,
 }: Props) {
+  // One lookup table for the whole render rather than one per event.
+  const calendarEvents = useMemo(() => {
+    const byId = new Map(categories.map((category) => [category.id, category]))
+    return events.map((event) => toCalendarEvent(event, byId))
+  }, [events, categories])
+
   return (
     <FullCalendar
       ref={calendarRef}
@@ -128,7 +137,7 @@ export function CalendarPane({
       selectable
       selectMirror
       editable={false}
-      events={events.map(toCalendarEvent)}
+      events={calendarEvents}
       eventContent={eventChip}
       datesSet={onDatesSet}
       eventClick={onEventClick}

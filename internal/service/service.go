@@ -71,7 +71,7 @@ func (s *Service) locOr(loc *time.Location) *time.Location {
 // event_date derived from that instant, and the caller's timezone decides
 // which calendar day that instant belongs to.
 func (s *Service) Create(ctx context.Context, in model.EventInput, loc *time.Location) (model.Event, error) {
-	ev, reminders, _, err := s.build(nil, in, s.locOr(loc))
+	ev, reminders, _, err := s.build(ctx, nil, in, s.locOr(loc))
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -97,7 +97,7 @@ func (s *Service) Update(ctx context.Context, id int64, in model.EventInput, loc
 	if err != nil {
 		return model.Event{}, err
 	}
-	ev, reminders, replaceReminders, err := s.build(&cur, in, s.locOr(loc))
+	ev, reminders, replaceReminders, err := s.build(ctx, &cur, in, s.locOr(loc))
 	if err != nil {
 		return model.Event{}, err
 	}
@@ -107,8 +107,25 @@ func (s *Service) Update(ctx context.Context, id int64, in model.EventInput, loc
 	return s.store.UpdateEvent(ctx, ev, reminders, replaceReminders)
 }
 
-// Delete removes an event and, by cascade, its reminders.
+// Delete marks an event as deleted by moving it to the deleted category.
+//
+// That is all DELETE means now: the row stays, so the event can still be read
+// and moved back out, and it stops appearing in range queries. Removing it from
+// the table for good is Remove.
 func (s *Service) Delete(ctx context.Context, id int64) error {
+	// Read first so a missing event is a 404 rather than an update that matched
+	// nothing.
+	if _, err := s.store.GetEvent(ctx, id); err != nil {
+		return err
+	}
+	return s.store.SetEventCategory(ctx, id, store.CategoryDeleted, s.now().Unix())
+}
+
+// Remove deletes an event from the table for good, reminders included.
+//
+// Kept separate from Delete on purpose: marking is reversible, and nothing
+// should destroy data without saying so.
+func (s *Service) Remove(ctx context.Context, id int64) error {
 	return s.store.DeleteEvent(ctx, id)
 }
 
@@ -116,7 +133,7 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 // result. It returns the event to persist, the reminder times to apply as
 // Unix seconds, and
 // whether that reminder set should replace the stored one.
-func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Location) (model.Event, []int64, bool, error) {
+func (s *Service) build(ctx context.Context, cur *model.Event, in model.EventInput, loc *time.Location) (model.Event, []int64, bool, error) {
 	verr := &apperr.Validation{}
 	creating := cur == nil
 
@@ -168,6 +185,19 @@ func (s *Service) build(cur *model.Event, in model.EventInput, loc *time.Locatio
 			} else {
 				ev.Location = &l
 			}
+		}
+	}
+
+	// Every event belongs to exactly one category. New ones start uncategorized
+	// unless told otherwise.
+	if creating {
+		ev.CategoryID = store.CategoryUncategorized
+	}
+	if in.CategoryID.Set {
+		if in.CategoryID.Value == nil {
+			verr.Add("category_id", "must not be null")
+		} else if s.resolveCategory(ctx, verr, *in.CategoryID.Value) {
+			ev.CategoryID = *in.CategoryID.Value
 		}
 	}
 

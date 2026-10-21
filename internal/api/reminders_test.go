@@ -290,14 +290,26 @@ func TestReminderDelete(t *testing.T) {
 	}
 }
 
-func TestReminderCascadeOnEventDelete(t *testing.T) {
+// Deleting only marks an event, so its reminders stay; removing it for good is
+// what cascades.
+func TestReminderCascadeOnEventRemove(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 	eventID := newEventForReminders(t, h, "会议")
 	addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460700}`, eventID))
 
-	h.do(http.MethodDelete, fmt.Sprintf("/api/v1/events/%d", eventID), "", nil)
-
+	path := fmt.Sprintf("/api/v1/events/%d", eventID)
+	h.do(http.MethodDelete, path, "", nil)
 	status, _, raw := h.do(http.MethodGet, "/api/v1/reminders", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if got := h.decode(raw); got["count"].(float64) != 1 {
+		t.Errorf("deleting the event dropped its reminders: %v", got["count"])
+	}
+
+	h.do(http.MethodPost, path+"/remove", "", nil)
+
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
