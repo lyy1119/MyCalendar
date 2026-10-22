@@ -7,6 +7,8 @@
  * the first paint so there is no flash of the wrong theme.
  */
 
+import { readableTextOn } from './eventMapping'
+
 export type ThemeMode = 'auto' | 'light' | 'dark'
 export type ResolvedTheme = 'light' | 'dark'
 
@@ -45,6 +47,24 @@ export function resolveTheme(mode: ThemeMode): ResolvedTheme {
 /** Apply a mode to the document. */
 export function applyTheme(mode: ThemeMode): void {
   document.documentElement.setAttribute('data-theme', resolveTheme(mode))
+  applyAccentInk()
+}
+
+/**
+ * Sets `--mc-accent-ink`: the text colour that reads best on the accent.
+ *
+ * The accent differs per theme (a deep blue in light, a pale blue in dark), so
+ * the text on it cannot be a constant: a fixed white would be 4.5:1 on one and
+ * 1.3:1 on the other. Rather than hard-code a second literal per theme, the
+ * same black-or-white decision the event blocks use is applied here, reading
+ * the accent straight out of the stylesheet. That keeps one rule for every
+ * filled surface.
+ */
+function applyAccentInk(): void {
+  const root = document.documentElement
+  const accent = window.getComputedStyle(root).getPropertyValue('--mc-accent').trim()
+  if (!accent) return
+  root.style.setProperty('--mc-accent-ink', readableTextOn(accent))
 }
 
 /** Persist a mode. Failure is not worth surfacing: the theme still applies. */

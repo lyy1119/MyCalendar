@@ -69,6 +69,16 @@ export function EventDialog({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose, busy])
 
+  // Escape is the expected way out of a dialog; without it the only exits are
+  // the buttons, and a stray key press looks like the dialog is stuck.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [busy, onClose])
+
   const patch = (fields: Partial<EventDraft>) => setDraft((d) => ({ ...d, ...fields }))
 
   const setReminder = (index: number, value: string) =>
@@ -327,7 +337,7 @@ export function EventDialog({
                 <button
                   key={offset.minutes}
                   type="button"
-                  className="mc-chip"
+                  className="mc-offset-chip"
                   onClick={() => addOffset(offset.minutes)}
                 >
                   {offset.label}

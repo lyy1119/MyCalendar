@@ -118,7 +118,18 @@ export function CalendarPane({
       // API is queried with, so the grid and the server still agree.
       firstDay={1}
       headerToolbar={{ left: 'prev,next today', center: 'title', right: 'fourDay,timeGridWeek' }}
-      buttonText={{ today: '今天' }}
+      // A custom button rather than the built-in one: FullCalendar disables its
+      // own "today" whenever today is already inside the visible window, so the
+      // button sits there greyed out and unclickable most of the time -- which
+      // reads as broken. The click-through does exactly what the built-in one
+      // does, but it is always available, so "back to today" never refuses.
+      customButtons={{
+        today: {
+          text: '今天',
+          hint: '回到今天',
+          click: () => calendarRef.current?.getApi().today(),
+        },
+      }}
       // "周一 12" rather than the locale default "12日周一".
       //
       // DayHeaderContentArg.date is a real Date already converted into the

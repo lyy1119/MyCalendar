@@ -196,6 +196,16 @@ try {
   await page.locator('.mc-dialog .mc-btn', { hasText: '关闭' }).click()
   await page.waitForSelector('.mc-dialog', { state: 'detached', timeout: 5000 })
 
+  // Escape closes a dialog too, so the page can never be trapped behind one.
+  await page
+    .locator('.mc-calendar .fc-timegrid-event', { hasText: '定时日程' })
+    .first()
+    .click({ position: { x: 24, y: 10 } })
+  await page.waitForSelector('.mc-dialog', { timeout: 5000 })
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  check('Escape closes the dialog', (await page.locator('.mc-dialog').count()) === 0)
+
   // Dragging empty grid space would normally create an event. Locked, it must
   // not: creating is only available from the sidebar button.
   const column = await page.locator('.mc-calendar .fc-timegrid-col').first().boundingBox()
@@ -493,10 +503,43 @@ try {
   const labelAfter = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check('next moves the window', labelBefore !== labelAfter, `${labelBefore} -> ${labelAfter}`)
 
+  // The built-in FullCalendar button greys itself out whenever today is already
+  // visible, so the app replaces it with a custom button that never refuses.
+  check(
+    'today stays clickable while today is already on screen',
+    (await page.locator('.mc-calendar .fc-today-button').isDisabled()) === false,
+  )
+
   await page.locator('.mc-calendar .fc-today-button').click()
   await page.waitForTimeout(600)
   const labelToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check('today returns to the current window', labelToday === labelBefore, `${labelToday} vs ${labelBefore}`)
+
+  // ...including after selecting a slot in the past, which is when someone is
+  // most likely to want it.
+  await page.locator('.mc-calendar .fc-prev-button').click()
+  await page.waitForTimeout(500)
+  const col = await page.locator('.mc-calendar .fc-timegrid-col').nth(1).boundingBox()
+  await page.mouse.move(col.x + col.width / 2, col.y + 130)
+  await page.mouse.down()
+  await page.mouse.move(col.x + col.width / 2, col.y + 210, { steps: 6 })
+  await page.mouse.up()
+  await page.waitForTimeout(700)
+
+  if (await page.locator('.mc-dialog').count()) {
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(400)
+  }
+
+  const beforeToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
+  await page.locator('.mc-calendar .fc-today-button').click()
+  await page.waitForTimeout(600)
+  const afterToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
+  check(
+    'today works after selecting in the past',
+    afterToday === labelBefore && beforeToday !== afterToday,
+    `${beforeToday} -> ${afterToday}`,
+  )
 
   // ------------------------------------------------------------ event chip
 
@@ -650,6 +693,18 @@ try {
     })
     check('today is a rounded rectangle, not a circle', todayCell === '6px', `border-radius=${todayCell}`)
 
+    // A month grid reads as a month grid only when the days are square; a taller
+    // row turns it into a column of rectangles.
+    const dayCell = await page.evaluate(() => {
+      const frame = document.querySelector('.mc-mini .fc-daygrid-day-frame').getBoundingClientRect()
+      return { w: frame.width, h: frame.height }
+    })
+    check(
+      'mini month days are square',
+      Math.abs(dayCell.w - dayCell.h) <= 1.5,
+      `w=${dayCell.w.toFixed(1)} h=${dayCell.h.toFixed(1)}`,
+    )
+
     const bars = await page.evaluate(() => {
       const grid = document.querySelector('.mc-calendar .fc-scroller-liquid-absolute')
       return grid
@@ -720,11 +775,68 @@ try {
       invisible.length === 0,
       seen.map((r) => `${r.title} ${r.separation.toFixed(2)}`).join(', '),
     )
+    {
+      // The active view button (4 天 / 周) is a filled control too, so the same
+      // rule has to hold: black or white, whichever reads better on the accent.
+      const active = await page.evaluate(() => {
+        const btn = document.querySelector('.mc-calendar .fc-button-active')
+        const s = getComputedStyle(btn)
+        return { color: s.color, bg: s.backgroundColor }
+      })
+      const ratio = (() => {
+        const parse = (css) => {
+          const n = (css.match(/[\d.]+/g) ?? []).map(Number)
+          return { r: n[0], g: n[1], b: n[2] }
+        }
+        const lin = (v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4)
+        const lum = ({ r, g, b }) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        const a = lum(parse(active.color))
+        const b = lum(parse(active.bg))
+        return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
+      })()
+      check(
+        `${theme}：the active view button is readable (>= 4.5:1)`,
+        ratio >= 4.5,
+        `color=${active.color} bg=${active.bg} ratio=${ratio.toFixed(2)}`,
+      )
+    }
+
     const edgeless = seen.filter((r) => r.borderOnFill < 1.05)
     check(
       `${theme}：the block has a visible edge`,
       edgeless.length === 0,
       seen.map((r) => `${r.title} ${r.borderOnFill.toFixed(2)}`).join(', '),
+    )
+
+    // The chip's own text must not be faded: an opacity on a title or a time
+    // silently costs contrast that the colour choice was supposed to guarantee.
+    const faded = await page.evaluate(() => {
+      const found = []
+      for (const chip of document.querySelectorAll('.mc-calendar .mc-chip')) {
+        if (chip.closest('.mc-task')) continue
+        for (const el of chip.querySelectorAll('*')) {
+          const opacity = parseFloat(getComputedStyle(el).opacity)
+          if (opacity < 1) found.push(`${el.className}:${opacity}`)
+        }
+      }
+      return found
+    })
+    check(`${theme}：no text inside a block is faded`, faded.length === 0, faded.join(', '))
+
+    const titleMatches = await page.evaluate(() => {
+      return [...document.querySelectorAll('.mc-calendar .fc-timegrid-event')].map((el) => {
+        const main = el.querySelector('.fc-event-main')
+        const title = el.querySelector('.fc-event-title')
+        return {
+          title: el.textContent.trim().slice(0, 6),
+          same: main && title ? getComputedStyle(main).color === getComputedStyle(title).color : null,
+        }
+      })
+    })
+    check(
+      `${theme}：the title wears the block's computed text colour`,
+      titleMatches.every((t) => t.same === true),
+      titleMatches.filter((t) => t.same !== true).map((t) => t.title).join(', '),
     )
   }
   await setTheme('自动')

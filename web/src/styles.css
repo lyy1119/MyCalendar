@@ -29,7 +29,9 @@
   --mc-text-dim: #5f6368;
   --mc-accent: #1a73e8;
   --mc-accent-strong: #1967d2;
-  --mc-accent-contrast: #ffffff;
+  /* Overwritten at runtime by applyTheme with a computed black-or-white; the
+     literal below is only the pre-script fallback. */
+  --mc-accent-ink: #ffffff;
   --mc-danger: #d93025;
   --mc-hover: rgba(60, 64, 67, 0.08);
   --mc-overlay: rgba(32, 33, 36, 0.5);
@@ -62,7 +64,7 @@
   --mc-text-dim: #9aa0a6;
   --mc-accent: #a8c7fa;
   --mc-accent-strong: #8ab4f8;
-  --mc-accent-contrast: #062e6f;
+  --mc-accent-ink: #1f1f1f;
   --mc-danger: #f28b82;
   --mc-hover: rgba(255, 255, 255, 0.08);
   --mc-overlay: rgba(0, 0, 0, 0.6);
@@ -241,8 +243,12 @@ body {
   padding: 2px 4px;
 }
 
+/* Square days: the cell width comes from the sidebar, and without this the row
+   height is whatever the number needs, which reads as a column of tall
+   rectangles rather than a month grid. */
 .mc-mini .fc .fc-daygrid-day-frame {
-  min-height: 26px;
+  aspect-ratio: 1 / 1;
+  min-height: 0;
 }
 
 .mc-mini .fc .fc-scrollgrid {
@@ -273,7 +279,7 @@ body {
 }
 
 .mc-mini .fc .mc-mini-selected .fc-daygrid-day-number {
-  color: var(--mc-accent-contrast);
+  color: var(--mc-accent-ink);
   font-weight: 600;
 }
 
@@ -514,7 +520,7 @@ body {
 
 .mc-btn--primary {
   background: var(--mc-accent);
-  color: var(--mc-accent-contrast);
+  color: var(--mc-accent-ink);
 }
 
 .mc-btn--primary:hover:not(:disabled) {
@@ -550,7 +556,7 @@ body {
   --fc-button-hover-border-color: var(--mc-border);
   --fc-button-active-bg-color: var(--mc-accent);
   --fc-button-active-border-color: var(--mc-accent);
-  --fc-button-active-text-color: var(--mc-accent-contrast);
+  --fc-button-active-text-color: var(--mc-accent-ink);
 
   color: var(--mc-text);
 }
@@ -585,6 +591,14 @@ body {
 .fc .fc-button-group > .fc-button {
   border-radius: 18px;
   margin-left: 6px;
+}
+
+/* FullCalendar's own active rule asks for --fc-button-text-color, which is the
+   ordinary body colour: on the accent that is 2.3:1 in light and 1.3:1 in dark.
+   Point it at the accent's own ink instead. */
+.fc .fc-button-primary:not(:disabled).fc-button-active,
+.fc .fc-button-primary:not(:disabled):active {
+  color: var(--mc-accent-ink);
 }
 
 /* Day headers: weekday plus date, with today called out in the accent. */
@@ -642,9 +656,11 @@ body {
   font-weight: 500;
 }
 
+/* No opacity: on a solid fill, "slightly transparent white" is the difference
+   between 4.5:1 and 3.6:1. The time and the extra lines are told apart by size
+   and by position, not by fading into the block. */
 .fc .fc-timegrid-event .fc-event-time {
   font-size: 11px;
-  opacity: 0.85;
 }
 
 .fc .fc-daygrid-block-event {
@@ -743,8 +759,13 @@ body {
   border-radius: 15px;
 }
 
-/* A suggestion, not a commitment: small pill buttons beside the field. */
-.mc-chip {
+/* A suggestion, not a commitment: small pill buttons beside the field.
+ *
+ * Deliberately NOT called .mc-chip: that is the name of the event block's
+ * content wrapper, and sharing it meant this rule painted every event title in
+ * the dim text colour -- overriding the per-category black-or-white choice and
+ * making titles nearly invisible on a solid fill. */
+.mc-offset-chip {
   height: 30px;
   padding: 0 12px;
   border-radius: 15px;
@@ -756,7 +777,7 @@ body {
   cursor: pointer;
 }
 
-.mc-chip:hover {
+.mc-offset-chip:hover {
   background: var(--mc-hover);
   color: var(--mc-text);
 }
@@ -801,7 +822,7 @@ body {
 
 .mc-segmented__item.is-active {
   background: var(--mc-accent);
-  color: var(--mc-accent-contrast);
+  color: var(--mc-accent-ink);
 }
 
 .mc-theme__hint {
@@ -846,7 +867,7 @@ body {
 .mc-lock-btn.is-on {
   border-color: transparent;
   background: var(--mc-accent);
-  color: var(--mc-accent-contrast);
+  color: var(--mc-accent-ink);
 }
 
 .mc-lock-btn.is-on:hover {
@@ -901,7 +922,6 @@ body {
    reads first. */
 .mc-chip__line {
   font-size: 11px;
-  opacity: 0.85;
 }
 
 /* An all-day event is a single bar: title, then location beside it. */
@@ -999,7 +1019,7 @@ body {
 .mc-gear-btn.is-active {
   border-color: transparent;
   background: var(--mc-accent);
-  color: var(--mc-accent-contrast);
+  color: var(--mc-accent-ink);
 }
 
 .mc-cats {
