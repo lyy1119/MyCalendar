@@ -401,7 +401,7 @@ func (s *Server) buildHelp() helpDoc {
 			{
 				Method:  "GET",
 				Path:    "/api/v1/reminders",
-				Summary: "List reminders, optionally for one event and/or a time window. This is the call a client polls to find reminders that are due.",
+				Summary: "List reminders, optionally for one event and/or a time window. This is the call a client polls to find reminders that are due, so reminders of deleted events are left out unless include_deleted=true.",
 				Parameters: []string{
 					"event_id -- keep only the reminders of this event",
 					"from, to -- half-open window on remind_at, same encodings as elsewhere; tz decides how an offset-free value is read",

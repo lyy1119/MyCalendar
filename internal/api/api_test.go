@@ -1065,6 +1065,19 @@ func TestIndexDocument(t *testing.T) {
 			t.Errorf("index does not list %q", want)
 		}
 	}
+
+	// The two list endpoints hide the deleted category by default, which is the
+	// detail a polling client most needs from a one-line summary.
+	summaries := map[string]string{}
+	for _, rawEndpoint := range endpoints {
+		e := rawEndpoint.(map[string]any)
+		summaries[e["method"].(string)+" "+e["path"].(string)], _ = e["summary"].(string)
+	}
+	for _, path := range []string{"GET /api/v1/events", "GET /api/v1/reminders"} {
+		if !strings.Contains(summaries[path], "include_deleted") {
+			t.Errorf("index summary for %s does not mention include_deleted: %q", path, summaries[path])
+		}
+	}
 }
 
 func TestHelpMarkdown(t *testing.T) {
