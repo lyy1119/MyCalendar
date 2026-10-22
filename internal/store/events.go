@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	eventColumns    = `id, title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id`
+	eventColumns    = `id, title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id, canceled, deleted`
 	reminderColumns = `id, event_id, remind_at, created_at`
 	// Same columns, qualified for a query that joins events.
 	// Only ListReminders needs this -- it is the one place that has to ask about
@@ -43,10 +43,11 @@ func (s *Store) CreateEvent(ctx context.Context, ev model.Event, reminders []int
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO events (title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO events (title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id, canceled, deleted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.Title, strOrNil(ev.Notes), strOrNil(ev.Location), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
-		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.CreatedAt, ev.UpdatedAt, ev.CategoryID)
+		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.CreatedAt, ev.UpdatedAt, ev.CategoryID,
+		boolInt(ev.Canceled), boolInt(ev.Deleted))
 	if err != nil {
 		return model.Event{}, fmt.Errorf("insert event: %w", err)
 	}
@@ -111,10 +112,12 @@ func (s *Store) UpdateEvent(ctx context.Context, ev model.Event, reminders []int
 	res, err := tx.ExecContext(ctx,
 		`UPDATE events
 		    SET title = ?, notes = ?, location = ?, start_at = ?, end_at = ?, is_all_day = ?,
-		        event_date = ?, is_task = ?, is_completed = ?, updated_at = ?, category_id = ?
+		        event_date = ?, is_task = ?, is_completed = ?, updated_at = ?, category_id = ?,
+		        canceled = ?, deleted = ?
 		  WHERE id = ?`,
 		ev.Title, strOrNil(ev.Notes), strOrNil(ev.Location), ev.StartAt, intOrNil(ev.EndAt), boolInt(ev.IsAllDay),
-		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.UpdatedAt, ev.CategoryID, ev.ID)
+		strOrNil(ev.EventDate), boolInt(ev.IsTask), boolInt(ev.IsCompleted), ev.UpdatedAt, ev.CategoryID,
+		boolInt(ev.Canceled), boolInt(ev.Deleted), ev.ID)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("update event: %w", err)
 	}
@@ -198,18 +201,22 @@ func (s *Store) ListEvents(ctx context.Context, f model.EventFilter) ([]model.Ev
 		f.End.Unix(), f.Start.Unix(),
 	)
 
-	// An event in the deleted category is still a row, but it is not on the
-	// calendar any more, so a range query leaves it out -- unless the caller
-	// asked for deleted events, or named a category outright. An explicit
-	// category_id=-1 must list them rather than being cancelled out by the
-	// clause that hides them.
+	// A trashed event is still a row, but it is not on the calendar any more,
+	// so a listing leaves it out unless the caller asks for the trash by name.
 	switch {
-	case f.CategoryID != nil:
+	case f.Deleted != nil:
+		conds = append(conds, `deleted = ?`)
+		args = append(args, boolInt(*f.Deleted))
+	default:
+		conds = append(conds, `deleted = 0`)
+	}
+	if f.CategoryID != nil {
 		conds = append(conds, `category_id = ?`)
 		args = append(args, *f.CategoryID)
-	case !f.IncludeDeleted:
-		conds = append(conds, `category_id <> ?`)
-		args = append(args, CategoryDeleted)
+	}
+	if f.Canceled != nil {
+		conds = append(conds, `canceled = ?`)
+		args = append(args, boolInt(*f.Canceled))
 	}
 	if f.IsTask != nil {
 		conds = append(conds, `is_task = ?`)
@@ -220,8 +227,25 @@ func (s *Store) ListEvents(ctx context.Context, f model.EventFilter) ([]model.Ev
 		args = append(args, boolInt(*f.IsCompleted))
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
-		conds = append(conds, `title LIKE ? ESCAPE '\'`)
-		args = append(args, "%"+escapeLike(q)+"%")
+		// Which column the term is matched against is the caller's choice: the
+		// trash page offers title, location, notes or a date.
+		switch f.SearchField {
+		case "date":
+			// The service resolves the date into the day's bounds in the request
+			// timezone, so an event matches when it starts inside that day -- or
+			// when it is an all-day event stored on that date.
+			conds = append(conds, `(event_date = ? OR (is_all_day = 0 AND start_at >= ? AND start_at < ?))`)
+			args = append(args, q, derefInt(f.SearchFrom), derefInt(f.SearchTo))
+		case "location":
+			conds = append(conds, `location LIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeLike(q)+"%")
+		case "notes":
+			conds = append(conds, `notes LIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeLike(q)+"%")
+		default:
+			conds = append(conds, `title LIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeLike(q)+"%")
+		}
 	}
 
 	query := `SELECT ` + eventColumns + ` FROM events WHERE ` + strings.Join(conds, " AND ") +
@@ -335,10 +359,13 @@ func scanEvent(sc rowScanner) (model.Event, error) {
 		allDay    int64
 		task      int64
 		completed int64
+		canceled  int64
+		deleted   int64
 	)
 	if err := sc.Scan(
 		&ev.ID, &ev.Title, &notes, &location, &ev.StartAt, &endAt, &allDay,
 		&eventDate, &task, &completed, &ev.CreatedAt, &ev.UpdatedAt, &ev.CategoryID,
+		&canceled, &deleted,
 	); err != nil {
 		return model.Event{}, err
 	}
@@ -349,8 +376,18 @@ func scanEvent(sc rowScanner) (model.Event, error) {
 	ev.IsAllDay = allDay != 0
 	ev.IsTask = task != 0
 	ev.IsCompleted = completed != 0
+	ev.Canceled = canceled != 0
+	ev.Deleted = deleted != 0
 	ev.Reminders = []model.Reminder{}
 	return ev, nil
+}
+
+// derefInt renders an optional bound as a value the driver can bind.
+func derefInt(p *int64) any {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func boolInt(b bool) int64 {

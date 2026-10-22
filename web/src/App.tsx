@@ -5,7 +5,6 @@ import type { DateClickArg } from '@fullcalendar/interaction'
 
 import {
   ApiError,
-  CATEGORY_DELETED,
   getEvent,
   listCategories,
   listEvents,
@@ -20,6 +19,7 @@ import { CalendarPane } from './components/CalendarPane'
 import { EventDialog } from './components/EventDialog'
 import { Sidebar } from './components/Sidebar'
 import { CategoriesPage } from './components/CategoriesPage'
+import { TrashPage } from './components/TrashPage'
 
 /** How long a success notice stays on screen. */
 const TOAST_MS = 2600
@@ -31,10 +31,12 @@ const TOAST_MS = 2600
  * the browser's back button works; the Go server serves the same shell for any
  * non-/api path, which is what makes that possible without a router.
  */
-type Route = 'calendar' | 'categories'
+type Route = 'calendar' | 'categories' | 'trash'
 
 function readRoute(): Route {
-  return window.location.pathname.startsWith('/categories') ? 'categories' : 'calendar'
+  if (window.location.pathname.startsWith('/categories')) return 'categories'
+  if (window.location.pathname.startsWith('/trash')) return 'trash'
+  return 'calendar'
 }
 
 export default function App() {
@@ -48,14 +50,6 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [categories, setCategories] = useState<ApiCategory[]>([])
-  /**
-   * Whether the deleted category is switched on in the sidebar.
-   *
-   * Held in a ref as well as in the category list because the fetch callback
-   * needs it synchronously: the deleted events have to be asked for explicitly,
-   * or switching that category on would show an empty result.
-   */
-  const deletedDisplayedRef = useRef(false)
   const [route, setRoute] = useState<Route>(() => readRoute())
   /**
    * Whether the event dialog is showing a saved event as read-only, because the
@@ -86,13 +80,7 @@ export default function App() {
 
     setLoading(true)
     try {
-      const list = await listEvents({
-        from,
-        to,
-        tz: BROWSER_TZ,
-        includeDeleted: deletedDisplayedRef.current,
-        signal: controller.signal,
-      })
+      const list = await listEvents({ from, to, tz: BROWSER_TZ, signal: controller.signal })
       setEvents(list)
       setLoadError(null)
     } catch (err) {
@@ -112,11 +100,7 @@ export default function App() {
   // they are loaded once up front and again whenever the list changes.
   const loadCategories = useCallback(async () => {
     try {
-      const list = await listCategories()
-      setCategories(list)
-      // Kept in step here rather than in an effect so that a refresh issued
-      // straight after this call already sees the new value.
-      deletedDisplayedRef.current = list.some((c) => c.id === CATEGORY_DELETED && c.display)
+      setCategories(await listCategories())
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.fullMessage : String(err))
     }
@@ -162,7 +146,7 @@ export default function App() {
   }, [])
 
   const navigate = useCallback((next: Route) => {
-    const path = next === 'categories' ? '/categories' : '/'
+    const path = next === 'categories' ? '/categories' : next === 'trash' ? '/trash' : '/'
     if (window.location.pathname !== path) window.history.pushState({ route: next }, '', path)
     setRoute(next)
   }, [])
@@ -308,6 +292,8 @@ export default function App() {
         onEditUnlockedChange={setEditUnlocked}
         onOpenCategories={() => navigate('categories')}
         categoriesActive={route === 'categories'}
+        onOpenTrash={() => navigate('trash')}
+        trashActive={route === 'trash'}
         categories={categories}
         onToggleCategory={(id, display) => void handleToggleCategory(id, display)}
       />
@@ -348,6 +334,10 @@ export default function App() {
             onBack={() => navigate('calendar')}
             onChanged={handleCategoriesChanged}
           />
+        )}
+
+        {route === 'trash' && (
+          <TrashPage categories={categories} onBack={() => navigate('calendar')} onChanged={refresh} />
         )}
       </main>
 

@@ -48,7 +48,7 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	filter, err := parseFilter(r)
+	filter, err := parseFilter(r, loc)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -97,14 +97,20 @@ func filterSummary(f model.EventFilter) map[string]any {
 	if f.IsCompleted != nil {
 		out["is_completed"] = *f.IsCompleted
 	}
+	if f.Canceled != nil {
+		out["canceled"] = *f.Canceled
+	}
+	if f.Deleted != nil {
+		out["deleted"] = *f.Deleted
+	}
 	if f.CategoryID != nil {
 		out["category_id"] = *f.CategoryID
 	}
-	if f.IncludeDeleted {
-		out["include_deleted"] = true
-	}
 	if f.Query != "" {
 		out["q"] = f.Query
+	}
+	if f.SearchField != "" && f.SearchField != "title" {
+		out["q_field"] = f.SearchField
 	}
 	if f.Limit > 0 {
 		out["limit"] = f.Limit
@@ -181,14 +187,46 @@ func (s *Server) handlePatchEvent(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, model.NewEventView(ev, loc))
 }
 
-// handleDeleteEvent removes an event and its reminders.
+// handleDeleteEvent moves an event to the trash.
+//
+// It does not destroy anything: the row stays, leaves every listing, and can be
+// restored with PATCH {"deleted": false}. Destroying it is
+// POST /api/v1/events/{id}/delete_forever.
 func (s *Server) handleDeleteEvent(w http.ResponseWriter, r *http.Request) {
 	id, err := parseID(r)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
-	if err := s.svc.Delete(r.Context(), id); err != nil {
+	if err := s.svc.Trash(r.Context(), id); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCancelEvent calls an event off without removing it.
+func (s *Server) handleCancelEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := s.svc.Cancel(r.Context(), id); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteForeverEvent destroys an event that is already in the trash.
+func (s *Server) handleDeleteForeverEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := parseID(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := s.svc.DeleteForever(r.Context(), id); err != nil {
 		s.writeError(w, r, err)
 		return
 	}
@@ -226,12 +264,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			{"method": "GET", "path": "/help", "summary": "Full API reference (JSON, or text/plain for Markdown)"},
 			{"method": "GET", "path": "/healthz", "summary": "Liveness and database health"},
 			{"method": "POST", "path": "/api/v1/events", "summary": "Create an event"},
-			{"method": "GET", "path": "/api/v1/events", "summary": "List events in a day, week, month or explicit window; deleted ones are hidden unless include_deleted=true"},
+			{"method": "GET", "path": "/api/v1/events", "summary": "List events in a day, week, month or explicit window; trashed ones are hidden unless deleted=true"},
 			{"method": "GET", "path": "/api/v1/events/{id}", "summary": "Fetch one event with its reminders"},
 			{"method": "PATCH", "path": "/api/v1/events/{id}", "summary": "Partially update an event"},
-			{"method": "DELETE", "path": "/api/v1/events/{id}", "summary": "Delete an event by moving it to the deleted category (-1); the row stays"},
-			{"method": "POST", "path": "/api/v1/events/{id}/remove", "summary": "Remove an event for good, together with its reminders"},
-			{"method": "GET", "path": "/api/v1/reminders", "summary": "List reminders, for one event and/or a time window; reminders of deleted events are hidden unless include_deleted=true"},
+			{"method": "DELETE", "path": "/api/v1/events/{id}", "summary": "Move an event to the trash; the row stays and can be restored"},
+			{"method": "POST", "path": "/api/v1/events/{id}/cancel", "summary": "Call an event off, keeping it on the calendar"},
+			{"method": "POST", "path": "/api/v1/events/{id}/delete_forever", "summary": "Destroy a trashed event, together with its reminders"},
+			{"method": "GET", "path": "/api/v1/reminders", "summary": "List reminders, for one event and/or a time window; reminders of trashed events are hidden unless deleted=true"},
 			{"method": "POST", "path": "/api/v1/reminders", "summary": "Attach a reminder to an existing event"},
 			{"method": "GET", "path": "/api/v1/reminders/{id}", "summary": "Fetch one reminder"},
 			{"method": "PATCH", "path": "/api/v1/reminders/{id}", "summary": "Move a reminder to a new time"},

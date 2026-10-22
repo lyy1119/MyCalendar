@@ -372,10 +372,60 @@ func TestUpdatePatchSemantics(t *testing.T) {
 
 func isNotFound(err error) bool { return err == apperr.ErrNotFound }
 
-func TestDeleteReportsMissing(t *testing.T) {
+func TestCancelAndTrashReportMissing(t *testing.T) {
 	svc := newTestService(t, "UTC")
-	if err := svc.Delete(context.Background(), 4242); !isNotFound(err) {
-		t.Fatalf("Delete error = %v, want apperr.ErrNotFound", err)
+	ctx := context.Background()
+
+	if err := svc.Cancel(ctx, 4242); !isNotFound(err) {
+		t.Fatalf("Cancel error = %v, want apperr.ErrNotFound", err)
+	}
+	if err := svc.Trash(ctx, 4242); !isNotFound(err) {
+		t.Fatalf("Trash error = %v, want apperr.ErrNotFound", err)
+	}
+	if err := svc.DeleteForever(ctx, 4242); !isNotFound(err) {
+		t.Fatalf("DeleteForever error = %v, want apperr.ErrNotFound", err)
+	}
+}
+
+// An event has to be in the trash before it can be destroyed: the two steps are
+// what stops one careless call from losing data.
+func TestDeleteForeverRequiresTrash(t *testing.T) {
+	svc := newTestService(t, "UTC")
+	ctx := context.Background()
+
+	ev, err := svc.Create(ctx, model.EventInput{
+		Title:   set("要永久删除的"),
+		StartAt: at("2026-03-11T13:00:00"),
+		EndAt:   at("2026-03-11T14:00:00"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err = svc.DeleteForever(ctx, ev.ID)
+	if err == nil {
+		t.Fatal("DeleteForever destroyed an event that was not in the trash")
+	}
+	if conflict, ok := err.(*apperr.Conflict); !ok || conflict.Code != "not_in_trash" {
+		t.Fatalf("error = %#v, want a not_in_trash conflict", err)
+	}
+
+	if err := svc.Trash(ctx, ev.ID); err != nil {
+		t.Fatalf("Trash: %v", err)
+	}
+	trashed, err := svc.Get(ctx, ev.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !trashed.Deleted {
+		t.Errorf("event is not in the trash after Trash()")
+	}
+
+	if err := svc.DeleteForever(ctx, ev.ID); err != nil {
+		t.Fatalf("DeleteForever after Trash: %v", err)
+	}
+	if _, err := svc.Get(ctx, ev.ID); !isNotFound(err) {
+		t.Errorf("event survived DeleteForever: %v", err)
 	}
 }
 

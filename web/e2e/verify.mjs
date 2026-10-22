@@ -69,9 +69,18 @@ try {
   const nowSec = Math.floor(Date.now() / 1000)
   const existing = await api(`/api/v1/events?tz=${encodeURIComponent(TZ)}&from=${nowSec - 90 * 86400}&to=${nowSec + 90 * 86400}`)
   const stale = existing.body?.events ?? []
-  // DELETE only marks an event, so the cleanup uses /remove; otherwise every
-  // run would leave a deleted row behind and the trash would grow forever.
-  for (const e of stale) await api(`/api/v1/events/${e.id}/remove`, { method: 'POST' })
+  // DELETE moves an event to the trash, so the cleanup empties the trash first
+  // and then destroys everything: a run must not inherit another run's rows.
+  const trashed = await api(
+    `/api/v1/events?from=1970-01-01T00:00:00&to=2100-01-01T00:00:00&tz=${encodeURIComponent(TZ)}&deleted=true`,
+  )
+  for (const e of trashed.body?.events ?? []) {
+    await api(`/api/v1/events/${e.id}/delete_forever`, { method: 'POST' })
+  }
+  for (const e of stale) {
+    await api('/api/v1/events/' + e.id, { method: 'DELETE' })
+    await api(`/api/v1/events/${e.id}/delete_forever`, { method: 'POST' })
+  }
   // User categories go too, so a second run on the same database sees the same
   // sidebar as the first: the built-ins are -1 and 0, everything else is ours.
   const existingCategories = await api('/api/v1/categories')
@@ -541,8 +550,28 @@ try {
     check('removing every reminder clears the set', afterClear.body?.count === 0, `count=${afterClear.body?.count}`)
   }
 
-  // ---------------------------------------------------------------- delete
+  // ------------------------------------------------------------ cancel + trash
 
+  // Canceled is a state, not a removal: the event stays on the grid, struck
+  // through.
+  await openEditor('提醒探针')
+  await page.locator('.mc-dialog #mc-is-canceled').check()
+  await page.locator('.mc-dialog button[type="submit"]').click()
+  await page.waitForTimeout(800)
+  const canceledCheck = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('.mc-calendar .fc-timegrid-event')].find((n) => n.textContent.includes('提醒探针'))
+    const title = el?.querySelector('.fc-event-title')
+    return el
+      ? { canceled: el.classList.contains('mc-canceled'), decoration: title ? getComputedStyle(title).textDecorationLine : null }
+      : null
+  })
+  check(
+    'a canceled event stays on the grid, struck through',
+    canceledCheck?.canceled === true && canceledCheck?.decoration === 'line-through',
+    JSON.stringify(canceledCheck),
+  )
+
+  // Delete moves it to the trash: off the grid, still a row.
   page.once('dialog', (d) => d.accept())
   await openEditor('新建的日程')
   await page.locator('.mc-dialog .mc-btn--danger').click()
@@ -550,15 +579,13 @@ try {
   await page.waitForTimeout(700)
 
   const after = await api(`/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=${encodeURIComponent(TZ)}`)
-  check('deleting removes the event', !(after.body?.events ?? []).some((e) => e.title === '新建的日程'), (after.body?.events ?? []).map((e) => e.title).join('|'))
+  check('moving to the trash takes the event off the calendar', !(after.body?.events ?? []).some((e) => e.title === '新建的日程'), (after.body?.events ?? []).map((e) => e.title).join('|'))
 
-  // Deleting is a mark, not a destroy: the row is still there, in category -1.
-  const deleted = await api(
-    `/api/v1/events?range=day&date=${dateOnly(lastDay)}&tz=${encodeURIComponent(TZ)}&category_id=-1`,
+  const trashedList = await api(
+    `/api/v1/events?from=1970-01-01T00:00:00&to=2100-01-01T00:00:00&tz=${encodeURIComponent(TZ)}&deleted=true`,
   )
-  const marked = (deleted.body?.events ?? []).find((e) => e.title === '新建的日程')
-  check('deleting keeps the row in the deleted category', marked?.category_id === -1, `category_id=${marked?.category_id}`)
-  if (marked) await api(`/api/v1/events/${marked.id}/remove`, { method: 'POST' })
+  const trashedRow = (trashedList.body?.events ?? []).find((e) => e.title === '新建的日程')
+  check('the row survives in the trash', trashedRow?.deleted === true, `deleted=${trashedRow?.deleted}`)
 
   // ----------------------------------------------------------- navigation
 
@@ -959,11 +986,7 @@ try {
   const rowCount = await page.locator('.mc-sidebar .mc-catlist__row').count()
   check('the sidebar lists every category', rowCount >= 2, `rows=${rowCount}`)
   check(
-    'the deleted category starts hidden',
-    (await sidebarRow('删除').locator('input').isChecked()) === false,
-  )
-  check(
-    'ordinary categories start visible',
+    'categories start visible',
     (await sidebarRow('默认').locator('input').isChecked()) === true,
   )
 
@@ -1000,35 +1023,55 @@ try {
     (await gridTitles()).some((t) => t.startsWith('浅色块')),
   )
 
-  // Switching the deleted category on asks the API for deleted events (they are
-  // hidden server-side by default), so the toggle shows something rather than
-  // an empty result. The event is made here so this does not depend on what the
-  // earlier checks did with the trash.
-  const trash = await post({
-    title: '删除探针',
-    start_at: hourIn(today, 1, 16),
-    end_at: hourIn(today, 1, 17),
-  })
-  await api(`/api/v1/events/${trash.body?.id}`, { method: 'DELETE' })
+  // ------------------------------------------------ the trash page
+  // Deleting moved '新建的日程' here earlier; the page is where a permanent
+  // delete lives, and it searches by field.
+  await page.locator('.mc-sidebar .mc-trash-link').click()
+  await page.waitForSelector('.mc-page.mc-trash', { timeout: 5000 })
+  check('the trash has a page of its own', new URL(page.url()).pathname === '/trash', page.url())
+  check('the trash lists what was moved there', (await page.locator('.mc-trash__row').count()) >= 1)
   check(
-    'the deleted event is gone while its category is off',
-    !(await gridTitles()).some((t) => t.startsWith('删除探针')),
+    'trash rows are uniformly tall and the list is capped',
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.mc-trash__row')].map((r) => Math.round(r.getBoundingClientRect().height))
+      const list = document.querySelector('.mc-trash__list')
+      return rows.every((h) => h === rows[0]) && getComputedStyle(list).maxHeight !== 'none'
+    }),
   )
-  await sidebarRow('删除').click()
+
+  // The field selector decides which column the term is matched against; date
+  // says so in the placeholder.
+  await page.selectOption('.mc-trash__field', 'date')
+  check(
+    'the date search says what format it wants',
+    (await page.locator('.mc-trash__term').getAttribute('placeholder')) === 'YYYY-MM-DD',
+  )
+  await page.fill('.mc-trash__term', '1999-01-01')
+  await page.click('.mc-trash__search button[type="submit"]')
+  await page.waitForTimeout(700)
+  check('a search with no match empties the list', (await page.locator('.mc-trash__row').count()) === 0)
+
+  await page.selectOption('.mc-trash__field', 'title')
+  await page.fill('.mc-trash__term', '新建的日程')
+  await page.click('.mc-trash__search button[type="submit"]')
+  await page.waitForTimeout(700)
+  check('searching by title finds it', (await page.locator('.mc-trash__row').count()) === 1)
+
+  page.once('dialog', (d) => d.accept())
+  await page.locator('.mc-trash__destroy').first().click()
   await page.waitForTimeout(800)
-  const withDeleted = await gridTitles()
-  check(
-    'enabling the deleted category shows what was deleted',
-    withDeleted.some((t) => t.startsWith('删除探针')),
-    withDeleted.join('|'),
+  check('永久删除 empties the row', (await page.locator('.mc-trash__row').count()) === 0)
+  const goneAfter = await api(
+    `/api/v1/events?from=1970-01-01T00:00:00&to=2100-01-01T00:00:00&tz=${encodeURIComponent(TZ)}&deleted=true`,
   )
-  await sidebarRow('删除').click()
-  await page.waitForTimeout(800)
   check(
-    'switching it off hides them again',
-    !(await gridTitles()).some((t) => t.startsWith('删除探针')),
+    'the row is gone from the database too',
+    !(goneAfter.body?.events ?? []).some((e) => e.title === '新建的日程'),
   )
-  await api(`/api/v1/events/${trash.body?.id}/remove`, { method: 'POST' })
+
+  await page.locator('.mc-page .mc-btn--ghost').click()
+  await page.waitForSelector('.mc-calendar .fc-timegrid-col', { timeout: 5000 })
+  check('back from the trash returns to the calendar', new URL(page.url()).pathname === '/', page.url())
 
   // ------------------------------------------------------- category page
   // The gear opens a page of its own (a real path, so a refresh stays there),
@@ -1039,20 +1082,16 @@ try {
   const rows = await page.locator('.mc-page .mc-cats__row').count()
   check('the page lists the categories', rows >= 2, `rows=${rows}`)
   check(
-    'the deleted category name is not editable',
-    await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').isDisabled(),
-  )
-  check(
     'the default category name is editable',
-    (await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').isDisabled()) === false,
+    (await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').isDisabled()) === false,
   )
-  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').fill('默认（改过）')
-  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').blur()
+  await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').fill('默认（改过）')
+  await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').blur()
   await page.waitForTimeout(500)
   const renamed = await api('/api/v1/categories/0')
   check('renaming the default category is saved', renamed.body?.name === '默认（改过）', `name=${renamed.body?.name}`)
-  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').fill('默认')
-  await page.locator('.mc-page .mc-cats__row').nth(1).locator('input.mc-cats__name').blur()
+  await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').fill('默认')
+  await page.locator('.mc-page .mc-cats__row').first().locator('input.mc-cats__name').blur()
   await page.waitForTimeout(500)
 
   await page.locator('.mc-page .mc-btn--ghost').click()

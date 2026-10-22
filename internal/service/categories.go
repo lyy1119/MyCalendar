@@ -9,7 +9,6 @@ import (
 
 	"github.com/lyy1119/MyCalendar/internal/apperr"
 	"github.com/lyy1119/MyCalendar/internal/model"
-	"github.com/lyy1119/MyCalendar/internal/store"
 )
 
 // Category operations, plus the two ways an event can go away.
@@ -42,30 +41,15 @@ func (s *Service) CreateCategory(ctx context.Context, in model.CategoryInput) (m
 	return s.store.CreateCategory(ctx, name, color, display)
 }
 
-// UpdateCategory renames or recolours a category. Both fields are optional, and
-// omitting one leaves it as it was.
+// UpdateCategory renames, recolours or shows/hides a category. Every field is
+// optional, and omitting one leaves it as it was.
 //
-// The deleted category (-1) keeps its name: "deleted" is a state the API names,
-// not a grouping the user chose, so renaming it would make the meaning of a
-// category_id of -1 depend on data. Its colour stays editable, which is what
-// people actually want to change about it. Category 0 is fully editable -- it
-// is just the default grouping.
+// There is no protected name any more: the category that used to be called
+// "deleted" is gone, because being deleted is now a column on the event.
 func (s *Service) UpdateCategory(ctx context.Context, id int64, in model.CategoryInput) (model.Category, error) {
 	current, err := s.store.GetCategory(ctx, id)
 	if err != nil {
 		return model.Category{}, err
-	}
-	if id == store.CategoryDeleted && in.Name.Set {
-		wanted := ""
-		if in.Name.Value != nil {
-			wanted = strings.TrimSpace(*in.Name.Value)
-		}
-		// Sending the name it already has is not a change, so it is allowed;
-		// only an actual rename is refused.
-		if wanted != current.Name {
-			return model.Category{}, apperr.NewConflict("category_name_fixed",
-				"the deleted category (-1) keeps its name; rename is refused because -1 is a state the API names. Its colour can still be changed")
-		}
 	}
 	name, color, display, verr := s.categoryFields(in, current.Name, current.Color, current.Display)
 	if verr != nil {

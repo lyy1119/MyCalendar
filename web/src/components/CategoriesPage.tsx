@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   ApiError,
-  CATEGORY_DELETED,
   CATEGORY_UNCATEGORIZED,
   createCategory,
   deleteCategory,
@@ -16,8 +15,8 @@ interface Props {
   onChanged: () => void
 }
 
-/** The seeded rows the API refuses to delete. */
-const PROTECTED = new Set<number>([CATEGORY_DELETED, CATEGORY_UNCATEGORIZED])
+/** The seeded row the API refuses to delete. */
+const PROTECTED = new Set<number>([CATEGORY_UNCATEGORIZED])
 
 /**
  * Category management as its own page rather than a dialog.
@@ -135,7 +134,6 @@ export function CategoriesPage({ categories, onBack, onChanged }: Props) {
       <div className="mc-page__body">
         <ul className="mc-cats">
           {categories.map((category) => {
-            const nameFixed = category.id === CATEGORY_DELETED
             return (
               <li className="mc-cats__row" key={category.id}>
                 <label
@@ -157,8 +155,7 @@ export function CategoriesPage({ categories, onBack, onChanged }: Props) {
                   aria-label={`「${category.name}」的名称`}
                   defaultValue={category.name}
                   maxLength={100}
-                  disabled={busy || nameFixed}
-                  title={nameFixed ? '「删除」是内置状态名称，不能修改；颜色可以改' : undefined}
+                  disabled={busy}
                   onBlur={(e) => {
                     const name = e.target.value.trim()
                     if (name === '' || name === category.name) {
@@ -174,11 +171,6 @@ export function CategoriesPage({ categories, onBack, onChanged }: Props) {
                   }}
                 />
 
-                {category.id === CATEGORY_DELETED && (
-                  <span className="mc-cats__tag" title="内置状态：名称固定，颜色可改">
-                    内置 · 名称固定
-                  </span>
-                )}
                 {category.id === CATEGORY_UNCATEGORIZED && (
                   <span className="mc-cats__tag" title="新日程默认进入这里">
                     内置 · 默认

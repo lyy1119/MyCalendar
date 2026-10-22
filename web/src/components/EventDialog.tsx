@@ -1,13 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  ApiError,
-  CATEGORY_DELETED,
-  createEvent,
-  deleteEvent,
-  removeEvent,
-  updateEvent,
-  type ApiCategory,
-} from '../api'
+import { ApiError, createEvent, deleteEvent, updateEvent, type ApiCategory } from '../api'
 import {
   REMINDER_OFFSETS,
   draftStart,
@@ -129,16 +121,14 @@ export function EventDialog({
     }
   }
 
-  // "Delete" marks the event: it joins the deleted category and can come back.
-  // "Remove" is the destructive one, and it is only offered on an event that
-  // has already been deleted, so it cannot be reached by accident.
-  const isDeleted = draft.categoryID === CATEGORY_DELETED
+  // The destructive action here is "move to the trash": the calendar page never
+  // destroys data, and the trash page is where a permanent delete lives.
   const selectedCategory = categories.find((c) => c.id === draft.categoryID)
 
   const handleDelete = async () => {
     if (isNew) return
     const confirmed = window.confirm(
-      `删除「${draft.title || '未命名'}」？日程会移到「已删除」，之后可以从分类里放回来。`,
+      `把「${draft.title || '未命名'}」移到回收站？之后可以在左侧的回收站里恢复或永久删除。`,
     )
     if (!confirmed) return
 
@@ -146,25 +136,7 @@ export function EventDialog({
     setError(null)
     try {
       await deleteEvent(draft.id as number)
-      onSaved('已移入「已删除」')
-    } catch (err) {
-      setError(err instanceof ApiError ? err.fullMessage : String(err))
-      setBusy(false)
-    }
-  }
-
-  const handleRemove = async () => {
-    if (isNew) return
-    const confirmed = window.confirm(
-      `永久移除「${draft.title || '未命名'}」？这条日程和它的提醒会从数据库里删掉，无法恢复。`,
-    )
-    if (!confirmed) return
-
-    setBusy(true)
-    setError(null)
-    try {
-      await removeEvent(draft.id as number)
-      onSaved('已永久移除')
+      onSaved('已移到回收站')
     } catch (err) {
       setError(err instanceof ApiError ? err.fullMessage : String(err))
       setBusy(false)
@@ -230,9 +202,6 @@ export function EventDialog({
                 value={draft.categoryID}
                 onChange={(e) => patch({ categoryID: Number(e.target.value) })}
               >
-                {/* A deleted event keeps its -1 so opening it does not silently
-                    bring it back; the option only appears in that case. */}
-                {draft.categoryID === CATEGORY_DELETED && <option value={CATEGORY_DELETED}>已删除</option>}
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -370,6 +339,18 @@ export function EventDialog({
             </div>
           )}
 
+          {/* Called off is not the same as gone: the event keeps its place on
+              the calendar, drawn struck through. */}
+          <div className="mc-field mc-field--inline">
+            <input
+              id="mc-is-canceled"
+              type="checkbox"
+              checked={draft.canceled}
+              onChange={(e) => patch({ canceled: e.target.checked })}
+            />
+            <label htmlFor="mc-is-canceled">已取消</label>
+          </div>
+
           {error && <p className="mc-error" role="alert">{error}</p>}
           </fieldset>
 
@@ -391,12 +372,7 @@ export function EventDialog({
               <>
             {!isNew && (
               <button type="button" className="mc-btn mc-btn--danger" onClick={() => void handleDelete()} disabled={busy}>
-                删除
-              </button>
-            )}
-            {!isNew && isDeleted && (
-              <button type="button" className="mc-btn mc-btn--danger" onClick={() => void handleRemove()} disabled={busy}>
-                永久移除
+                移到回收站
               </button>
             )}
             <div className="mc-dialog__spacer" />

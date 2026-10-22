@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lyy1119/MyCalendar/internal/model"
 )
@@ -104,6 +105,82 @@ func makeV1Database(t *testing.T, withEvent bool) string {
 	return path
 }
 
+// v2Schema is what v2.0.2 left behind: categories with the -1 "deleted" row,
+// events with category_id, and no canceled/deleted columns.
+const v2Schema = `
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL,
+    color   TEXT NOT NULL,
+    display INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id           INTEGER PRIMARY KEY,
+    title        TEXT    NOT NULL,
+    notes        TEXT,
+    start_at     INTEGER NOT NULL,
+    end_at       INTEGER,
+    is_all_day   INTEGER NOT NULL DEFAULT 0,
+    event_date   TEXT,
+    is_task      INTEGER NOT NULL DEFAULT 0,
+    is_completed INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    location     TEXT,
+    category_id  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id         INTEGER PRIMARY KEY,
+    event_id   INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    remind_at  INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_start_at ON events(start_at);
+CREATE INDEX IF NOT EXISTS idx_events_category ON events(category_id);
+
+INSERT INTO categories (id, name, color, display) VALUES (-1, '删除', '#9aa0a6', 0);
+INSERT INTO categories (id, name, color, display) VALUES (0, '默认', '#1a73e8', 1);
+INSERT INTO categories (id, name, color, display) VALUES (1, '工作', '#e53935', 1);
+INSERT INTO meta (key, value) VALUES ('format_version', '2');
+`
+
+// makeV2Database writes a v2.0.2-shaped database: three categories including
+// the deleted one, one live event, and one that format 2 called deleted.
+func makeV2Database(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "v2.db")
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open v2 database: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(v2Schema); err != nil {
+		t.Fatalf("create v2 schema: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO events (title, start_at, end_at, created_at, updated_at, category_id)
+		 VALUES ('还在的日程', 1773205200, 1773208800, 1000, 1000, 1)`,
+		`INSERT INTO events (title, start_at, end_at, created_at, updated_at, category_id)
+		 VALUES ('被删除的日程', 1773208800, 1773212400, 1000, 1000, -1)`,
+		`INSERT INTO reminders (event_id, remind_at, created_at) VALUES (2, 1773208600, 1000)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	return path
+}
+
 // makeLegacyDatabase writes a v0.1.0-shaped database and returns its path.
 func makeLegacyDatabase(t *testing.T, withEvent bool) string {
 	t.Helper()
@@ -171,13 +248,31 @@ func TestUpgradeFromV0IsRefused(t *testing.T) {
 	}
 }
 
-func TestUpgradeFromV1Database(t *testing.T) {
+// A v1.1.2 database is two majors behind now, so the one-major rule applies:
+// the v2 release has to be run first.
+func TestUpgradeFromV1IsRefused(t *testing.T) {
 	ctx := context.Background()
 	path := makeV1Database(t, true)
 
+	_, err := Open(ctx, path)
+	if err == nil {
+		t.Fatal("Open upgraded a v1 database straight to the current format")
+	}
+	if !strings.Contains(err.Error(), "one major version at a time") {
+		t.Errorf("error does not explain the rule: %v", err)
+	}
+}
+
+// Upgrading a v2.0.2 database: the two new columns appear, the events that
+// format 2 had marked deleted by category -1 move into the trash, and the
+// deleted category itself is gone.
+func TestUpgradeFromV2Database(t *testing.T) {
+	ctx := context.Background()
+	path := makeV2Database(t)
+
 	st, err := Open(ctx, path)
 	if err != nil {
-		t.Fatalf("Open legacy database: %v", err)
+		t.Fatalf("Open v2 database: %v", err)
 	}
 	defer st.Close()
 
@@ -186,43 +281,68 @@ func TestUpgradeFromV1Database(t *testing.T) {
 		t.Fatalf("FormatVersionOf: %v", err)
 	}
 	if version != FormatVersion {
-		t.Errorf("format version after upgrade = %d, want %d", version, FormatVersion)
+		t.Errorf("format version = %d, want %d", version, FormatVersion)
 	}
 
-	// The column exists and existing rows kept their data.
-	ev, err := st.GetEvent(ctx, 1)
+	// The live event is untouched.
+	live, err := st.GetEvent(ctx, 1)
 	if err != nil {
-		t.Fatalf("GetEvent after upgrade: %v", err)
+		t.Fatalf("GetEvent 1: %v", err)
 	}
-	if ev.Title != "来自 v1" || ev.Notes == nil || *ev.Notes != "旧备注" {
-		t.Errorf("existing data changed during upgrade: %+v", ev)
-	}
-	if ev.Location == nil || *ev.Location != "旧地点" {
-		t.Errorf("location = %v, want the migrated row to keep 旧地点", ev.Location)
-	}
-	if ev.CategoryID != CategoryUncategorized {
-		t.Errorf("category_id = %d, want the migrated row to land in uncategorized", ev.CategoryID)
-	}
-	if len(ev.Reminders) != 1 {
-		t.Errorf("reminders = %d, want the migrated row's reminder", len(ev.Reminders))
+	if live.Title != "还在的日程" || live.CategoryID != 1 || live.Deleted || live.Canceled {
+		t.Errorf("live event after upgrade = %+v", live)
 	}
 
-	// And the new column is usable afterwards.
-	location := "新地点"
-	ev.Location = &location
-	updated, err := st.UpdateEvent(ctx, ev, nil, false)
+	// The event format 2 called deleted is now in the trash, in the default
+	// category, with its reminder intact.
+	trashed, err := st.GetEvent(ctx, 2)
 	if err != nil {
-		t.Fatalf("UpdateEvent after upgrade: %v", err)
+		t.Fatalf("GetEvent 2: %v", err)
 	}
-	if updated.Location == nil || *updated.Location != "新地点" {
-		t.Errorf("location after update = %v", updated.Location)
+	if !trashed.Deleted {
+		t.Errorf("the event that was deleted in format 2 is not in the trash")
+	}
+	if trashed.CategoryID != CategoryUncategorized {
+		t.Errorf("category_id = %d, want the default 0", trashed.CategoryID)
+	}
+	if len(trashed.Reminders) != 1 {
+		t.Errorf("reminders = %d, want the trashed event's reminder kept", len(trashed.Reminders))
+	}
+
+	// The deleted category no longer exists; what is left is 0 and the user's.
+	categories, err := st.ListCategories(ctx)
+	if err != nil {
+		t.Fatalf("ListCategories: %v", err)
+	}
+	ids := make([]int64, 0, len(categories))
+	for _, c := range categories {
+		ids = append(ids, c.ID)
+	}
+	if len(ids) != 2 || ids[0] != CategoryUncategorized || ids[1] != 1 {
+		t.Errorf("categories after upgrade = %v, want [0 1]", ids)
+	}
+
+	// A calendar query does not see the trashed row; the trash filter does.
+	inTrash := true
+	listed, err := st.ListEvents(ctx, model.EventFilter{
+		Start:     time.Unix(1773200000, 0),
+		End:       time.Unix(1773300000, 0),
+		StartDate: "2026-03-11",
+		EndDate:   "2026-03-12",
+		Deleted:   &inTrash,
+	})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != 2 {
+		t.Errorf("trash listing = %+v, want just event 2", listed)
 	}
 }
 
 // Migrating twice must be a no-op: every start runs the check.
 func TestUpgradeIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	path := makeV1Database(t, true)
+	path := makeV2Database(t)
 
 	for attempt := 1; attempt <= 3; attempt++ {
 		st, err := Open(ctx, path)
@@ -268,11 +388,11 @@ func TestBuiltInCategoriesAreRestored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCategories: %v", err)
 	}
-	if len(categories) != 2 {
-		t.Fatalf("categories = %d, want the two built-in rows back", len(categories))
+	if len(categories) != 1 {
+		t.Fatalf("categories = %d, want the default row back", len(categories))
 	}
-	if categories[0].ID != CategoryDeleted || categories[1].ID != CategoryUncategorized {
-		t.Errorf("restored ids = %d, %d", categories[0].ID, categories[1].ID)
+	if categories[0].ID != CategoryUncategorized {
+		t.Errorf("restored id = %d, want 0", categories[0].ID)
 	}
 }
 
@@ -282,23 +402,14 @@ func TestBuiltInCategoriesAreRestored(t *testing.T) {
 // the column; startup has to add it, or every category query fails.
 func TestUnreleasedFormat2GainsDisplayColumn(t *testing.T) {
 	ctx := context.Background()
-	path := makeV1Database(t, true)
+	path := makeV2Database(t)
 
-	// Simulate the intermediate build: migrate, then strip the column the way
-	// that build's schema would have looked.
-	st, err := Open(ctx, path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	st.Close()
-
+	// Simulate a pre-release format-2 file: the same tables, minus the column.
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
-		t.Fatalf("reopen: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 	for _, stmt := range []string{
-		// The same table without the column, keeping the primary key so the seed
-		// rows stay identifiable.
 		`CREATE TABLE categories_old (
 		     id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL)`,
 		`INSERT INTO categories_old (id, name, color) SELECT id, name, color FROM categories`,
@@ -321,18 +432,12 @@ func TestUnreleasedFormat2GainsDisplayColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCategories: %v", err)
 	}
+	// The upgrade drops the old -1 row and keeps the default plus the user's.
 	if len(categories) != 2 {
-		t.Fatalf("categories = %d, want the two built-ins", len(categories))
+		t.Fatalf("categories = %d, want the default and the user category", len(categories))
 	}
-	byID := map[int64]model.Category{}
-	for _, c := range categories {
-		byID[c.ID] = c
-	}
-	if !byID[CategoryUncategorized].Display {
-		t.Errorf("category 0 display = false, want the default true")
-	}
-	if byID[CategoryDeleted].Display {
-		t.Errorf("category -1 display = true, want it hidden")
+	if categories[0].ID != CategoryUncategorized || !categories[0].Display {
+		t.Errorf("category 0 = %+v, want the visible default", categories[0])
 	}
 }
 
@@ -401,11 +506,11 @@ func TestRestoringBuiltInCategoriesKeepsRenames(t *testing.T) {
 	st := newTestStore(t)
 	path := st.Path()
 
-	renamed, err := st.UpdateCategory(ctx, CategoryDeleted, "已删除", "#9aa0a6", false)
+	renamed, err := st.UpdateCategory(ctx, CategoryUncategorized, "我的默认", "#9aa0a6", true)
 	if err != nil {
 		t.Fatalf("UpdateCategory: %v", err)
 	}
-	if renamed.Name != "已删除" {
+	if renamed.Name != "我的默认" {
 		t.Fatalf("name = %q", renamed.Name)
 	}
 	st.Close()
@@ -416,11 +521,11 @@ func TestRestoringBuiltInCategoriesKeepsRenames(t *testing.T) {
 	}
 	defer reopened.Close()
 
-	category, err := reopened.GetCategory(ctx, CategoryDeleted)
+	category, err := reopened.GetCategory(ctx, CategoryUncategorized)
 	if err != nil {
 		t.Fatalf("GetCategory: %v", err)
 	}
-	if category.Name != "已删除" {
+	if category.Name != "我的默认" {
 		t.Errorf("name after restart = %q, want the rename to survive", category.Name)
 	}
 }
@@ -516,7 +621,7 @@ func TestMigratedSchemaMatchesFreshSchema(t *testing.T) {
 	}
 	defer fresh.Close()
 
-	migrated, err := Open(ctx, makeV1Database(t, false))
+	migrated, err := Open(ctx, makeV2Database(t))
 	if err != nil {
 		t.Fatalf("Open legacy: %v", err)
 	}

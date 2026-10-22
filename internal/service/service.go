@@ -107,25 +107,56 @@ func (s *Service) Update(ctx context.Context, id int64, in model.EventInput, loc
 	return s.store.UpdateEvent(ctx, ev, reminders, replaceReminders)
 }
 
-// Delete marks an event as deleted by moving it to the deleted category.
+// Cancel calls an event off without removing it.
 //
-// That is all DELETE means now: the row stays, so the event can still be read
-// and moved back out, and it stops appearing in range queries. Removing it from
-// the table for good is Remove.
-func (s *Service) Delete(ctx context.Context, id int64) error {
-	// Read first so a missing event is a 404 rather than an update that matched
-	// nothing.
-	if _, err := s.store.GetEvent(ctx, id); err != nil {
+// The event keeps its category and its place on the calendar, drawn as canceled,
+// because "this was called off" is a fact about the event rather than a reason
+// to hide it.
+func (s *Service) Cancel(ctx context.Context, id int64) error {
+	cur, err := s.store.GetEvent(ctx, id)
+	if err != nil {
 		return err
 	}
-	return s.store.SetEventCategory(ctx, id, store.CategoryDeleted, s.now().Unix())
+	if cur.Canceled {
+		return nil
+	}
+	cur.Canceled = true
+	cur.UpdatedAt = s.now().Unix()
+	_, err = s.store.UpdateEvent(ctx, cur, nil, false)
+	return err
 }
 
-// Remove deletes an event from the table for good, reminders included.
+// Trash moves an event to the trash, which is what DELETE means.
 //
-// Kept separate from Delete on purpose: marking is reversible, and nothing
-// should destroy data without saying so.
-func (s *Service) Remove(ctx context.Context, id int64) error {
+// The row stays, so the event can still be read and restored; it simply leaves
+// every listing. Destroying the row is DeleteForever, and only works from here.
+func (s *Service) Trash(ctx context.Context, id int64) error {
+	cur, err := s.store.GetEvent(ctx, id)
+	if err != nil {
+		return err
+	}
+	if cur.Deleted {
+		return nil
+	}
+	cur.Deleted = true
+	cur.UpdatedAt = s.now().Unix()
+	_, err = s.store.UpdateEvent(ctx, cur, nil, false)
+	return err
+}
+
+// DeleteForever destroys the row, reminders included.
+//
+// Only an event that is already in the trash can be destroyed: the two-step is
+// deliberate, so nothing loses data by one careless call.
+func (s *Service) DeleteForever(ctx context.Context, id int64) error {
+	cur, err := s.store.GetEvent(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !cur.Deleted {
+		return apperr.NewConflict("not_in_trash",
+			"this event is not in the trash; move it there first, or it is not what you meant to destroy")
+	}
 	return s.store.DeleteEvent(ctx, id)
 }
 
@@ -206,6 +237,14 @@ func (s *Service) build(ctx context.Context, cur *model.Event, in model.EventInp
 	}
 	if in.IsCompleted.Set && in.IsCompleted.Value != nil {
 		ev.IsCompleted = *in.IsCompleted.Value
+	}
+	// canceled and deleted are ordinary fields on PATCH: setting deleted=false
+	// is how an event comes back out of the trash.
+	if in.Canceled.Set && in.Canceled.Value != nil {
+		ev.Canceled = *in.Canceled.Value
+	}
+	if in.Deleted.Set && in.Deleted.Value != nil {
+		ev.Deleted = *in.Deleted.Value
 	}
 	if in.IsAllDay.Set && in.IsAllDay.Value != nil {
 		ev.IsAllDay = *in.IsAllDay.Value

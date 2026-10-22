@@ -32,6 +32,9 @@ interface Props {
   /** Every category, with the stored answer to "show this one?". */
   categories: ApiCategory[]
   onToggleCategory: (id: number, display: boolean) => void
+  onOpenTrash: () => void
+  /** Whether the trash page is the one on screen. */
+  trashActive: boolean
 }
 
 /**
@@ -78,6 +81,8 @@ export function Sidebar({
   categoriesActive,
   categories,
   onToggleCategory,
+  onOpenTrash,
+  trashActive,
 }: Props) {
   const miniRef = useRef<FullCalendar>(null)
   const [themeMode, setThemeMode, resolvedTheme] = useTheme()
@@ -218,6 +223,18 @@ export function Sidebar({
             ? '点击日程可修改或删除'
             : '已锁定：点击日程只能查看内容，「新建日程」仍然可用'}
         </p>
+
+        {/* The trash sits below the lock, at the bottom of the rail: it is a
+            place you go to, not a setting. */}
+        <button
+          type="button"
+          className={trashActive ? 'mc-trash-link is-active' : 'mc-trash-link'}
+          onClick={onOpenTrash}
+          aria-pressed={trashActive}
+        >
+          <span aria-hidden="true">🗑</span>
+          <span>回收站</span>
+        </button>
       </div>
     </aside>
   )

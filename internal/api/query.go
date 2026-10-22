@@ -97,6 +97,16 @@ func (s *Server) resolveWindow(r *http.Request, loc *time.Location, ws calendar.
 	}
 }
 
+// parseCategoryQueryID reads a category id from a query parameter. Ids are 0 or
+// positive: the -1 that once meant "deleted" is now a column on the event.
+func parseCategoryQueryID(raw string) (int64, error) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 0 {
+		return 0, apperr.Param("category_id", "must be a non-negative integer")
+	}
+	return id, nil
+}
+
 // parseInstant reads a window bound, reporting problems against the parameter
 // that carried it.
 //
@@ -111,19 +121,26 @@ func parseInstant(param, raw string, loc *time.Location) (time.Time, error) {
 }
 
 // parseFilter reads the optional list filters and pagination.
-func parseFilter(r *http.Request) (model.EventFilter, error) {
+func parseFilter(r *http.Request, loc *time.Location) (model.EventFilter, error) {
 	q := r.URL.Query()
 	var f model.EventFilter
 
-	if raw := strings.TrimSpace(q.Get("include_deleted")); raw != "" {
+	if raw := strings.TrimSpace(q.Get("deleted")); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {
-			return f, apperr.Param("include_deleted", "must be true or false")
+			return f, apperr.Param("deleted", "must be true or false")
 		}
-		f.IncludeDeleted = v
+		f.Deleted = &v
+	}
+	if raw := strings.TrimSpace(q.Get("canceled")); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return f, apperr.Param("canceled", "must be true or false")
+		}
+		f.Canceled = &v
 	}
 	if raw := strings.TrimSpace(q.Get("category_id")); raw != "" {
-		id, err := parseSignedID("category_id", raw)
+		id, err := parseCategoryQueryID(raw)
 		if err != nil {
 			return f, err
 		}
@@ -148,6 +165,26 @@ func parseFilter(r *http.Request) (model.EventFilter, error) {
 			return f, apperr.Param("q", "must be at most 200 characters")
 		}
 		f.Query = raw
+	}
+	// q_field decides which column q is matched against. Date is the only one
+	// that needs resolving: a typed date becomes that day's bounds in tz.
+	if raw := strings.TrimSpace(q.Get("q_field")); raw != "" {
+		switch raw {
+		case "title", "location", "notes", "date":
+			f.SearchField = raw
+		default:
+			return f, apperr.Param("q_field", "must be one of title, location, notes, date")
+		}
+		if raw == "date" && f.Query != "" {
+			day, err := calendar.ParseDate(f.Query, loc)
+			if err != nil {
+				return f, apperr.Param("q", "with q_field=date, q must be a date formatted as YYYY-MM-DD")
+			}
+			from := day.Unix()
+			to := calendar.AddDays(day, 1, loc).Unix()
+			f.SearchFrom, f.SearchTo = &from, &to
+			f.Query = day.Format(model.DateLayout)
+		}
 	}
 	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
 		n, err := strconv.Atoi(raw)

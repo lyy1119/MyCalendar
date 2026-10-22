@@ -30,7 +30,7 @@ import (
 //
 // Keep it equal to the major version of the release. Migrating a database
 // happens on startup and brings it up to exactly this number.
-const FormatVersion = 2
+const FormatVersion = 3
 
 // formatVersionKey is the row in the meta table holding the stamp.
 const formatVersionKey = "format_version"
@@ -77,9 +77,33 @@ var migrations = []step{
 			return err
 		},
 	},
-	// Next major version goes here, for example:
-	//
-	//	{from: 2, to: 3, notes: "no format change", apply: nil},
+	{
+		from:  2,
+		to:    3,
+		notes: "canceled and deleted on events; the deleted category becomes the trash",
+		apply: func(ctx context.Context, tx *sql.Tx) error {
+			steps := []string{
+				// Appended in this order; currentSchema lists them the same way.
+				`ALTER TABLE events ADD COLUMN canceled INTEGER NOT NULL DEFAULT 0`,
+				`ALTER TABLE events ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`,
+				// Format 2 said "deleted" by setting category -1. That state now
+				// lives on the event, so those rows move into the trash: off the
+				// calendar, still recoverable, and no longer pretending to be a
+				// grouping of their own.
+				`UPDATE events SET category_id = 0, deleted = 1 WHERE category_id = -1`,
+				// -1 stops existing as a category, so a stale reference from a
+				// client becomes a validation error instead of a silent state.
+				`DELETE FROM categories WHERE id = -1`,
+				`CREATE INDEX IF NOT EXISTS idx_events_deleted ON events(deleted)`,
+			}
+			for _, stmt := range steps {
+				if _, err := tx.ExecContext(ctx, stmt); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // categoriesSchema and seedCategories are used both when creating a database
@@ -94,12 +118,10 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 `
 
-// The names and colours the two built-in categories start with. They are not
-// arbitrary: 0 is what a new event gets, so its colour is what most of the
-// calendar looks like, and -1 is the label the API shows for a deleted event.
+// The name and colour the built-in category starts with. It is not arbitrary:
+// 0 is what a new event gets, so its colour is what most of the calendar looks
+// like.
 const (
-	deletedCategoryName       = "删除"
-	deletedCategoryColor      = "#9aa0a6"
 	uncategorizedCategoryName = "默认"
 	// Google's blue: white text on it reaches 4.5:1, so the default blocks are
 	// legible without a per-event decision, and it matches the light theme's
@@ -107,12 +129,9 @@ const (
 	uncategorizedCategoryColor = "#1a73e8"
 )
 
-// The two rows the application depends on. -1 marks an event as deleted, which
-// is what the delete endpoint sets, and 0 is the fallback for everything else.
-// Their ids are fixed, so later categories auto-increment from 1.
+// The one row the application depends on: 0 is where everything falls back to.
+// Its id is fixed, so later categories auto-increment from 1.
 const seedCategories = `
-INSERT OR IGNORE INTO categories (id, name, color, display)
- VALUES (-1, '` + deletedCategoryName + `', '` + deletedCategoryColor + `', 0);
 INSERT OR IGNORE INTO categories (id, name, color, display)
  VALUES (0, '` + uncategorizedCategoryName + `', '` + uncategorizedCategoryColor + `', 1);
 `
@@ -165,7 +184,10 @@ CREATE TABLE IF NOT EXISTS events (
     -- Appended by the 0->1 migration; see the note above on ordering.
     location     TEXT,
     -- Appended by the 1->2 migration.
-    category_id  INTEGER NOT NULL DEFAULT 0
+    category_id  INTEGER NOT NULL DEFAULT 0,
+    -- Appended by the 2->3 migration: called off, and in the trash.
+    canceled     INTEGER NOT NULL DEFAULT 0,
+    deleted      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS reminders (
@@ -180,6 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_events_end_at     ON events(end_at);
 CREATE INDEX IF NOT EXISTS idx_events_event_date ON events(event_date);
 CREATE INDEX IF NOT EXISTS idx_events_flags      ON events(is_all_day, is_task, is_completed);
 CREATE INDEX IF NOT EXISTS idx_events_category   ON events(category_id);
+CREATE INDEX IF NOT EXISTS idx_events_deleted    ON events(deleted);
 CREATE INDEX IF NOT EXISTS idx_reminders_event   ON reminders(event_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_at      ON reminders(remind_at);
 `
@@ -326,15 +349,14 @@ func (s *Store) createCurrent(ctx context.Context) error {
 	return nil
 }
 
-// ensureCategoryDisplay adds the display column to a categories table that was
-// created before the column existed.
+// ensureCategoryDisplay adds the display column to a categories table written
+// before the column existed.
 //
-// Format 2 has never been released, so the column was added by editing the
-// 1 -> 2 step while that step was still unreleased (it shipped, column and all,
-// in v2.0.0) rather than by adding a 2 -> 3 step. A database written by one of
-// the pre-release builds of that period therefore reports format 2 without the
-// column, and would fail on the first query; this repair is what keeps those
-// working. It is a no-op for a fresh or migrated database.
+// The column was folded into the 1 -> 2 step while v2.0.0 was still being
+// prepared, so a database from one of that period's pre-release builds claims
+// format 2 without having the column and would fail on the first query. This is
+// the repair for those files, and a no-op for every database v2.0.0 or later
+// wrote.
 func (s *Store) ensureCategoryDisplay(ctx context.Context) error {
 	has, err := s.columnExists(ctx, "categories", "display")
 	if err != nil {
@@ -346,10 +368,6 @@ func (s *Store) ensureCategoryDisplay(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx,
 		`ALTER TABLE categories ADD COLUMN display INTEGER NOT NULL DEFAULT 1`); err != nil {
 		return fmt.Errorf("add categories.display: %w", err)
-	}
-	// The whole point of the column on day one: the deleted pile stays hidden.
-	if _, err := s.db.ExecContext(ctx, `UPDATE categories SET display = 0 WHERE id = -1`); err != nil {
-		return fmt.Errorf("hide the deleted category: %w", err)
 	}
 	return nil
 }

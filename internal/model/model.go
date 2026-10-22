@@ -69,20 +69,27 @@ type CategoryInput struct {
 
 // Event is a stored calendar entry.
 type Event struct {
-	ID          int64      `json:"id"`
-	Title       string     `json:"title"`
-	Notes       *string    `json:"notes"`
-	Location    *string    `json:"location"`
-	StartAt     int64      `json:"start_at"`
-	EndAt       *int64     `json:"end_at"`
-	IsAllDay    bool       `json:"is_all_day"`
-	EventDate   *string    `json:"event_date"`
-	IsTask      bool       `json:"is_task"`
-	IsCompleted bool       `json:"is_completed"`
-	CategoryID  int64      `json:"category_id"`
-	CreatedAt   int64      `json:"created_at"`
-	UpdatedAt   int64      `json:"updated_at"`
-	Reminders   []Reminder `json:"reminders"`
+	ID          int64   `json:"id"`
+	Title       string  `json:"title"`
+	Notes       *string `json:"notes"`
+	Location    *string `json:"location"`
+	StartAt     int64   `json:"start_at"`
+	EndAt       *int64  `json:"end_at"`
+	IsAllDay    bool    `json:"is_all_day"`
+	EventDate   *string `json:"event_date"`
+	IsTask      bool    `json:"is_task"`
+	IsCompleted bool    `json:"is_completed"`
+	// Canceled marks a call-off: the event still exists, still belongs to its
+	// category, and still shows on the calendar -- struck through -- because
+	// "this was called off" is information, not absence.
+	Canceled bool `json:"canceled"`
+	// Deleted puts the event in the trash: it leaves every listing but keeps
+	// its row, so it can be restored or removed for good.
+	Deleted    bool       `json:"deleted"`
+	CategoryID int64      `json:"category_id"`
+	CreatedAt  int64      `json:"created_at"`
+	UpdatedAt  int64      `json:"updated_at"`
+	Reminders  []Reminder `json:"reminders"`
 }
 
 // Reminder is a scheduled notification time attached to an event.
@@ -192,6 +199,8 @@ type EventInput struct {
 	EventDate   Optional[string]          `json:"event_date"`
 	IsTask      Optional[bool]            `json:"is_task"`
 	IsCompleted Optional[bool]            `json:"is_completed"`
+	Canceled    Optional[bool]            `json:"canceled"`
+	Deleted     Optional[bool]            `json:"deleted"`
 	CategoryID  Optional[int64]           `json:"category_id"`
 	Reminders   Optional[[]ReminderInput] `json:"reminders"`
 }
@@ -224,13 +233,24 @@ type EventFilter struct {
 	EndDate     string
 	IsTask      *bool
 	IsCompleted *bool
-	// CategoryID keeps one category; IncludeDeleted stops the query from
-	// hiding events in the deleted category.
-	CategoryID     *int64
-	IncludeDeleted bool
-	Query          string
-	Limit          int
-	Offset         int
+	// Canceled keeps only canceled (or only uncanceled) events.
+	Canceled *bool
+	// Deleted selects the trash: true lists only trashed events, false lists
+	// only live ones, nil hides the trash the way a normal calendar does.
+	Deleted *bool
+	// CategoryID keeps one category.
+	CategoryID *int64
+	// SearchField is which column Query is matched against: title (the
+	// default), location, notes or date.
+	SearchField string
+	Query       string
+	// SearchFrom/SearchTo bound the day when SearchField is "date": the service
+	// resolves the typed date against the request timezone, so the database
+	// never has to know about zones.
+	SearchFrom *int64
+	SearchTo   *int64
+	Limit      int
+	Offset     int
 }
 
 // NewEventView renders an Event in loc, adding derived local timestamps.

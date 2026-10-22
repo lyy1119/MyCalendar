@@ -15,9 +15,10 @@ import (
 type ReminderFilter struct {
 	// EventID keeps only the reminders of one event.
 	EventID *int64
-	// IncludeDeleted also returns reminders whose event has been deleted
-	// (category -1). Off by default: a deleted event must not notify anybody,
-	// and a client polling this endpoint is looking for something to act on.
+	// IncludeDeleted also returns reminders whose event is in the trash. Off by
+	// default: a trashed event must not notify anybody, and a client polling
+	// this endpoint is looking for something to act on. The query parameter that
+	// sets it is `deleted`, matching the column.
 	IncludeDeleted bool
 	// From and To bound remind_at, half-open.
 	From *int64
@@ -84,8 +85,7 @@ func (s *Store) ListReminders(ctx context.Context, f ReminderFilter) ([]model.Re
 	query := `SELECT ` + reminderColumnsQualified + `
 	          FROM reminders r JOIN events e ON e.id = r.event_id`
 	if !f.IncludeDeleted {
-		conds = append(conds, `e.category_id <> ?`)
-		args = append(args, CategoryDeleted)
+		conds = append(conds, `e.deleted = 0`)
 	}
 	if len(conds) > 0 {
 		query += ` WHERE ` + strings.Join(conds, " AND ")

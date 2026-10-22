@@ -26,45 +26,23 @@ func listCategories(t *testing.T, h *harness) []map[string]any {
 	return out
 }
 
-// TestSeedCategories pins the two rows the API itself depends on.
+// TestSeedCategories pins the one row the API itself depends on.
 func TestSeedCategories(t *testing.T) {
 	h := newHarness(t, "UTC")
 
 	categories := listCategories(t, h)
-	if len(categories) != 2 {
-		t.Fatalf("got %d categories, want the two seed rows: %v", len(categories), categories)
+	if len(categories) != 1 {
+		t.Fatalf("got %d categories, want just the default: %v", len(categories), categories)
 	}
-
-	byID := map[int64]map[string]any{}
-	for _, c := range categories {
-		byID[int64(c["id"].(float64))] = c
+	def := categories[0]
+	if int64(def["id"].(float64)) != 0 {
+		t.Errorf("id = %v, want 0", def["id"])
 	}
-
-	deleted, ok := byID[-1]
-	if !ok {
-		t.Fatal("the deleted category (-1) is missing")
+	if def["name"] != "默认" || def["color"] != "#1a73e8" {
+		t.Errorf("default category = %v, want 默认/#1a73e8", def)
 	}
-	if deleted["name"] != "删除" {
-		t.Errorf("category -1 name = %v, want 删除", deleted["name"])
-	}
-	if deleted["color"] != "#9aa0a6" {
-		t.Errorf("category -1 colour = %v, want #9aa0a6", deleted["color"])
-	}
-	// The deleted pile starts hidden: it is a fallback for what was thrown away,
-	// not a place to look at.
-	if deleted["display"] != false {
-		t.Errorf("category -1 display = %v, want false", deleted["display"])
-	}
-
-	uncategorized, ok := byID[0]
-	if !ok {
-		t.Fatal("the uncategorized category (0) is missing")
-	}
-	if uncategorized["name"] != "默认" || uncategorized["color"] != "#1a73e8" {
-		t.Errorf("category 0 = %v, want 默认/#1a73e8", uncategorized)
-	}
-	if uncategorized["display"] != true {
-		t.Errorf("category 0 display = %v, want true", uncategorized["display"])
+	if def["display"] != true {
+		t.Errorf("default category display = %v, want true", def["display"])
 	}
 }
 
@@ -144,11 +122,17 @@ func TestCategoryCRUD(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown category is 404", func(t *testing.T) {
-		for _, path := range []string{"/api/v1/categories/999", "/api/v1/categories/-9"} {
-			if status, _, _ := h.do(http.MethodGet, path, "", nil); status != http.StatusNotFound {
-				t.Errorf("GET %s status = %d, want 404", path, status)
-			}
+	t.Run("unknown category is 404, a negative id is a bad parameter", func(t *testing.T) {
+		if status, _, _ := h.do(http.MethodGet, "/api/v1/categories/999", "", nil); status != http.StatusNotFound {
+			t.Errorf("GET /api/v1/categories/999 status = %d, want 404", status)
+		}
+		// -1 used to mean "deleted"; it is not a category any more.
+		status, _, raw := h.do(http.MethodGet, "/api/v1/categories/-1", "", nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("GET /api/v1/categories/-1 status = %d, want 400; body: %s", status, raw)
+		}
+		if fields := errorFields(t, h.decode(raw)); len(fields) == 0 || fields[0] != "id" {
+			t.Errorf("details = %v, want the id parameter", fields)
 		}
 	})
 }
@@ -192,53 +176,22 @@ func TestCategoryDisplay(t *testing.T) {
 		t.Errorf("details = %v, want display", fields)
 	}
 
-	// Showing the deleted pile is allowed too: the column is a preference, and
-	// the list endpoint decides separately what a query returns.
-	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/-1", `{"display":true}`, nil)
+	// The default category can be hidden like any other.
+	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/0", `{"display":false}`, nil)
 	if status != http.StatusOK {
-		t.Fatalf("PATCH -1 display status = %d, want 200; body: %s", status, raw)
+		t.Fatalf("PATCH 0 display status = %d, want 200; body: %s", status, raw)
 	}
-	if got := h.decode(raw); got["display"] != true {
-		t.Errorf("category -1 display = %v, want true", got["display"])
+	if got := h.decode(raw); got["display"] != false {
+		t.Errorf("category 0 display = %v, want false", got["display"])
 	}
 }
 
-// -1 is a state the API names rather than a grouping the user chose, so its
-// name is fixed; its colour -- and everything about category 0 -- stays
-// editable.
-func TestBuiltInCategoryNames(t *testing.T) {
+// Categories are ordinary groupings now: the one fixed id is 0, and even its
+// name is the user's to change.
+func TestCategoryRename(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 
-	// Renaming -1 is refused, and the refusal names the reason.
-	status, _, raw := h.do(http.MethodPatch, "/api/v1/categories/-1", `{"name":"垃圾箱"}`, nil)
-	if status != http.StatusConflict {
-		t.Fatalf("PATCH -1 name status = %d, want 409; body: %s", status, raw)
-	}
-	if code := errorCode(t, h.decode(raw)); code != "category_name_fixed" {
-		t.Errorf("error code = %q, want category_name_fixed", code)
-	}
-
-	// Sending the name it already has is not a rename, so it goes through and
-	// leaves the row alone.
-	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/-1", `{"name":"删除"}`, nil)
-	if status != http.StatusOK {
-		t.Fatalf("PATCH -1 with the same name = %d, want 200; body: %s", status, raw)
-	}
-	if got := h.decode(raw); got["name"] != "删除" {
-		t.Errorf("name = %v", got["name"])
-	}
-
-	// The colour of -1 changes freely.
-	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/-1", `{"color":"#cc4444"}`, nil)
-	if status != http.StatusOK {
-		t.Fatalf("PATCH -1 colour status = %d, want 200; body: %s", status, raw)
-	}
-	if got := h.decode(raw); got["color"] != "#cc4444" || got["name"] != "删除" {
-		t.Errorf("category -1 after recolour = %v, want #cc4444 with the name unchanged", got)
-	}
-
-	// Category 0 can be renamed: it is just the default grouping.
-	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/0", `{"name":"个人"}`, nil)
+	status, _, raw := h.do(http.MethodPatch, "/api/v1/categories/0", `{"name":"个人"}`, nil)
 	if status != http.StatusOK {
 		t.Fatalf("PATCH 0 name status = %d, want 200; body: %s", status, raw)
 	}
@@ -246,7 +199,6 @@ func TestBuiltInCategoryNames(t *testing.T) {
 		t.Errorf("name = %v, want 个人", got["name"])
 	}
 
-	// A user category is unaffected by any of this.
 	created := h.decode(mustDo(t, h, http.MethodPost, "/api/v1/categories",
 		`{"name":"工作","color":"#4a90e2"}`))
 	id := fmt.Sprintf("%v", created["id"])
@@ -260,14 +212,16 @@ func TestBuiltInCategoryNames(t *testing.T) {
 func TestCategoryDelete(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 
-	for _, id := range []string{"-1", "0"} {
-		status, _, raw := h.do(http.MethodDelete, "/api/v1/categories/"+id, "", nil)
-		if status != http.StatusConflict {
-			t.Fatalf("DELETE category %s status = %d, want 409; body: %s", id, status, raw)
-		}
-		if code := errorCode(t, h.decode(raw)); code != "category_protected" {
-			t.Errorf("error code = %q, want category_protected", code)
-		}
+	status, _, raw := h.do(http.MethodDelete, "/api/v1/categories/0", "", nil)
+	if status != http.StatusConflict {
+		t.Fatalf("DELETE category 0 status = %d, want 409; body: %s", status, raw)
+	}
+	if code := errorCode(t, h.decode(raw)); code != "category_protected" {
+		t.Errorf("error code = %q, want category_protected", code)
+	}
+	// -1 is not a category at all any more.
+	if status, _, _ := h.do(http.MethodDelete, "/api/v1/categories/-1", "", nil); status != http.StatusBadRequest {
+		t.Errorf("DELETE category -1 status = %d, want 400", status)
 	}
 
 	// A user category, with an event in it.
@@ -281,8 +235,8 @@ func TestCategoryDelete(t *testing.T) {
 		t.Fatalf("DELETE user category status = %d, want 204", status)
 	}
 
-	// The event survives, moved to uncategorized.
-	status, _, raw := h.do(http.MethodGet, fmt.Sprintf("/api/v1/events/%d", eventID), "", nil)
+	// The event survives, moved to the default category.
+	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/events/%d", eventID), "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("the event was lost with its category: status %d", status)
 	}
@@ -341,62 +295,38 @@ func TestEventCategoryField(t *testing.T) {
 	})
 }
 
-// Deleting through the category field and through DELETE must be the same
-// thing, and both must be reversible.
-func TestDeleteEqualsDeletingCategory(t *testing.T) {
+// A category is a grouping only: moving an event into one must not take it off
+// the calendar, and a negative category id is not a way to delete anything any
+// more.
+func TestCategoryIsNotAStateMarker(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 
-	viaEndpoint := h.create(`{"title":"用 DELETE","start_at":"2026-10-20T10:00"}`)
-	viaCategory := h.create(`{"title":"用分类","start_at":"2026-10-20T11:00"}`)
+	created := h.decode(mustDo(t, h, http.MethodPost, "/api/v1/categories",
+		`{"name":"工作","color":"#4a90e2"}`))
+	categoryID := int(created["id"].(float64))
+	ev := h.create(fmt.Sprintf(`{"title":"带分类","start_at":"2026-10-20T10:00","category_id":%d}`, categoryID))
 
-	h.do(http.MethodDelete, fmt.Sprintf("/api/v1/events/%d", eventID(t, viaEndpoint)), "", nil)
-	h.do(http.MethodPatch, fmt.Sprintf("/api/v1/events/%d", eventID(t, viaCategory)), `{"category_id":-1}`, nil)
-
-	for name, ev := range map[string]map[string]any{"viaEndpoint": viaEndpoint, "viaCategory": viaCategory} {
-		status, _, raw := h.do(http.MethodGet, fmt.Sprintf("/api/v1/events/%d", eventID(t, ev)), "", nil)
-		if status != http.StatusOK {
-			t.Fatalf("%s: status = %d", name, status)
-		}
-		if got := h.decode(raw)["category_id"].(float64); got != -1 {
-			t.Errorf("%s: category_id = %v, want -1", name, got)
-		}
+	status, _, raw := h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-10-20&tz=Asia/Shanghai", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if got := h.decode(raw)["count"].(float64); got != 1 {
+		t.Errorf("count = %v, want the event on the calendar", got)
 	}
 
-	t.Run("both disappear from range queries", func(t *testing.T) {
-		status, _, raw := h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-10-20&range=month&tz=Asia/Shanghai", "", nil)
-		if status != http.StatusBadRequest {
-			// range twice is still fine; the server takes the last one
-			_ = raw
-		}
-		status, _, raw = h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-10-20&tz=Asia/Shanghai", "", nil)
-		if status != http.StatusOK {
-			t.Fatalf("status = %d", status)
-		}
-		body := h.decode(raw)
-		if body["count"].(float64) != 0 {
-			t.Errorf("deleted events are still on the calendar: %v", body["count"])
-		}
+	// -1 used to mean "deleted"; it is not a category, so it is a bad value.
+	status, _, raw = h.do(http.MethodPatch, fmt.Sprintf("/api/v1/events/%d", eventID(t, ev)), `{"category_id":-1}`, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("PATCH category_id=-1 status = %d, want 400; body: %s", status, raw)
+	}
+	if fields := errorFields(t, h.decode(raw)); len(fields) == 0 || fields[0] != "category_id" {
+		t.Errorf("details = %v, want category_id", fields)
+	}
 
-		// Unless asked for.
-		status, _, raw = h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-10-20&tz=Asia/Shanghai&include_deleted=true", "", nil)
-		if status != http.StatusOK {
-			t.Fatalf("status = %d", status)
-		}
-		if got := h.decode(raw)["count"].(float64); got != 2 {
-			t.Errorf("include_deleted returned %v, want 2", got)
-		}
-	})
-
-	t.Run("restoring is setting the category back", func(t *testing.T) {
-		h.do(http.MethodPatch, fmt.Sprintf("/api/v1/events/%d", eventID(t, viaEndpoint)), `{"category_id":0}`, nil)
-		status, _, raw := h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-10-20&tz=Asia/Shanghai", "", nil)
-		if status != http.StatusOK {
-			t.Fatalf("status = %d", status)
-		}
-		if got := h.decode(raw)["count"].(float64); got != 1 {
-			t.Errorf("restored event count = %v, want 1", got)
-		}
-	})
+	// Listing by a negative category is refused the same way.
+	if status, _, _ := h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-10-20&tz=Asia/Shanghai&category_id=-1", "", nil); status != http.StatusBadRequest {
+		t.Errorf("category_id=-1 filter status = %d, want 400", status)
+	}
 }
 
 func TestListByCategory(t *testing.T) {
@@ -440,7 +370,11 @@ func TestHelpListsCategoryEndpoints(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	doc := string(raw)
-	for _, want := range []string{"/api/v1/categories", "/api/v1/events/{id}/remove"} {
+	for _, want := range []string{
+		"/api/v1/categories",
+		"/api/v1/events/{id}/cancel",
+		"/api/v1/events/{id}/delete_forever",
+	} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("the help document does not mention %s", want)
 		}

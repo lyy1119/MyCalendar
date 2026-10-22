@@ -51,6 +51,8 @@ export interface EventDraft {
   end: string
   isTask: boolean
   isCompleted: boolean
+  /** Called off: the event stays on the calendar, drawn struck through. */
+  canceled: boolean
   /** The event's single category. */
   categoryID: number
   /**
@@ -194,6 +196,7 @@ export function toCalendarEvent(event: ApiEvent, categories: Map<number, ApiCate
   const classNames: string[] = []
   if (event.is_task) classNames.push('mc-task')
   if (event.is_completed) classNames.push('mc-done')
+  if (event.canceled) classNames.push('mc-canceled')
 
   // The chip renderer needs these, and they are not part of FullCalendar's
   // event shape.
@@ -244,6 +247,7 @@ export function draftFromEvent(event: ApiEvent): EventDraft {
     end: event.end_at !== null ? toDateTimeLocal(fromUnixSeconds(event.end_at)) : '',
     isTask: event.is_task,
     isCompleted: event.is_completed,
+    canceled: event.canceled,
     categoryID: event.category_id,
     reminders: (event.reminders ?? []).map((r) => toDateTimeLocal(fromUnixSeconds(r.remind_at))),
   }
@@ -263,6 +267,7 @@ export function draftForRange(start: Date, end: Date | null, allDay: boolean): E
     end: toDateTimeLocal(effectiveEnd),
     isTask: false,
     isCompleted: false,
+    canceled: false,
     categoryID: 0,
     reminders: [],
   }
@@ -338,6 +343,7 @@ export function draftToInput(draft: EventDraft): DraftValidation {
     is_task: draft.isTask,
     // The server clears this anyway when the event is not a task.
     is_completed: draft.isTask ? draft.isCompleted : false,
+    canceled: draft.canceled,
     category_id: draft.categoryID,
   }
 

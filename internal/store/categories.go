@@ -10,14 +10,10 @@ import (
 	"github.com/lyy1119/MyCalendar/internal/model"
 )
 
-// IDs of the two categories the application depends on.
-const (
-	// CategoryDeleted marks an event as deleted. "Deleting" an event sets this,
-	// which is why deleted events stay in the table.
-	CategoryDeleted int64 = -1
-	// CategoryUncategorized is the default for anything else.
-	CategoryUncategorized int64 = 0
-)
+// CategoryUncategorized is the category every event starts in. It is the only
+// fixed row left: "deleted" is now a column on the event (trash), not a
+// category, so categories are purely groupings.
+const CategoryUncategorized int64 = 0
 
 const categoryColumns = `id, name, color, display`
 
@@ -94,15 +90,15 @@ func (s *Store) UpdateCategory(ctx context.Context, id int64, name, color string
 	return s.GetCategory(ctx, id)
 }
 
-// DeleteCategory removes a category, moving its events to the uncategorized
-// category in the same transaction so no event is left pointing at nothing.
+// DeleteCategory removes a category, moving its events to the default category
+// in the same transaction so no event is left pointing at nothing.
 //
-// The two system categories are refused rather than deleted: -1 is how an event
-// is marked as deleted, and 0 is where everything else falls back to.
+// Category 0 is refused rather than deleted: it is where everything else falls
+// back to.
 func (s *Store) DeleteCategory(ctx context.Context, id int64) (moved int64, err error) {
-	if id == CategoryDeleted || id == CategoryUncategorized {
+	if id == CategoryUncategorized {
 		return 0, apperr.NewConflict("category_protected",
-			"the deleted and uncategorized categories are part of the API and cannot be removed")
+			"the default category is part of the API and cannot be removed")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -151,8 +147,7 @@ func (s *Store) CategoryExists(ctx context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
-// SetEventCategory moves one event to a category, which is also how "delete"
-// (category -1) and "restore" (category 0) are implemented.
+// SetEventCategory moves one event to a category.
 func (s *Store) SetEventCategory(ctx context.Context, id, categoryID, now int64) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE events SET category_id = ?, updated_at = ? WHERE id = ?`, categoryID, now, id)

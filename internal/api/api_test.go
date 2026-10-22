@@ -693,60 +693,194 @@ func TestReminderWholeSetReplacement(t *testing.T) {
 	}
 }
 
-func TestDeleteEvent(t *testing.T) {
+// The trash page searches by field, so the API has to match the right column --
+// including a date, which is a day rather than a substring.
+func TestTrashSearchFields(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	mk := func(body string) int {
+		t.Helper()
+		return eventID(t, h.create(body))
+	}
+	keep := mk(`{"title":"周会","start_at":"2026-10-20T09:00","location":"三楼会议室","notes":"带上季度报表"}`)
+	notes := mk(`{"title":"评审","start_at":"2026-10-21T14:00","location":"线上","notes":"评审材料在共享盘"}`)
+	day := mk(`{"title":"出差","start_at":"2026-10-22T08:00","location":"北京","notes":"当天往返"}`)
+	for _, id := range []int{keep, notes, day} {
+		if status, _, _ := h.do(http.MethodDelete, fmt.Sprintf("/api/v1/events/%d", id), "", nil); status != http.StatusNoContent {
+			t.Fatalf("trash event %d failed", id)
+		}
+	}
+
+	search := func(query string) []string {
+		t.Helper()
+		status, _, raw := h.do(http.MethodGet,
+			"/api/v1/events?from=2026-10-01T00:00:00&to=2026-11-01T00:00:00&tz=Asia/Shanghai&deleted=true&"+query, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s: status = %d; body: %s", query, status, raw)
+		}
+		out := []string{}
+		for _, e := range h.decode(raw)["events"].([]any) {
+			out = append(out, e.(map[string]any)["title"].(string))
+		}
+		return out
+	}
+
+	if got := search("q=周会"); len(got) != 1 || got[0] != "周会" {
+		t.Errorf("title search = %v, want [周会]", got)
+	}
+	if got := search("q=北京&q_field=location"); len(got) != 1 || got[0] != "出差" {
+		t.Errorf("location search = %v, want [出差]", got)
+	}
+	if got := search("q=季度&q_field=notes"); len(got) != 1 || got[0] != "周会" {
+		t.Errorf("notes search = %v, want [周会]", got)
+	}
+	if got := search("q=2026-10-21&q_field=date"); len(got) != 1 || got[0] != "评审" {
+		t.Errorf("date search = %v, want [评审]", got)
+	}
+	// A term that cannot be a date is a bad parameter, not an empty result.
+	if status, _, _ := h.do(http.MethodGet, "/api/v1/events?range=day&tz=Asia/Shanghai&q=下周&q_field=date", "", nil); status != http.StatusBadRequest {
+		t.Errorf("q_field=date with a non-date = %d, want 400", status)
+	}
+	if status, _, _ := h.do(http.MethodGet, "/api/v1/events?range=day&tz=Asia/Shanghai&q=x&q_field=colour", "", nil); status != http.StatusBadRequest {
+		t.Errorf("unknown q_field = %d, want 400", status)
+	}
+
+	// The window still applies: a trash listing is not "all of time" by default.
+	if got := search("q=周会"); len(got) != 1 {
+		t.Errorf("windowed trash listing = %v", got)
+	}
+}
+
+// Canceling and trashing are different claims: a canceled event is still on the
+// calendar, a trashed one is not, and only a trashed one can be destroyed.
+func TestCancelAndTrashEvent(t *testing.T) {
 	h := newHarness(t, "UTC")
 	ev := h.create(`{"title":"Doomed","start_at":1773205200,"reminders":[{"remind_at":1773205000}]}`)
 	id := eventID(t, ev)
 	path := fmt.Sprintf("/api/v1/events/%d", id)
+	month := "/api/v1/events?range=month&date=2026-03-11&tz=UTC"
 
-	status, _, raw := h.do(http.MethodDelete, path, "", nil)
-	if status != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body: %s", status, raw)
-	}
-	if len(raw) != 0 {
-		t.Errorf("204 response must have an empty body, got: %s", raw)
-	}
+	t.Run("cancel keeps the event on the calendar", func(t *testing.T) {
+		status, _, raw := h.do(http.MethodPost, path+"/cancel", "", nil)
+		if status != http.StatusNoContent {
+			t.Fatalf("cancel status = %d, want 204; body: %s", status, raw)
+		}
+		status, _, raw = h.do(http.MethodGet, path, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET after cancel = %d", status)
+		}
+		if got := h.decode(raw); got["canceled"] != true || got["deleted"] != false {
+			t.Errorf("after cancel: canceled=%v deleted=%v, want true/false", got["canceled"], got["deleted"])
+		}
+		status, _, raw = h.do(http.MethodGet, month, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw); got["count"].(float64) != 1 {
+			t.Errorf("a canceled event left the calendar: %v", got["count"])
+		}
+		// Canceling twice is harmless.
+		if status, _, _ := h.do(http.MethodPost, path+"/cancel", "", nil); status != http.StatusNoContent {
+			t.Errorf("second cancel status = %d, want 204", status)
+		}
+		// Un-canceling is an ordinary field.
+		status, _, raw = h.do(http.MethodPatch, path, `{"canceled":false}`, nil)
+		if status != http.StatusOK {
+			t.Fatalf("PATCH canceled=false = %d; body: %s", status, raw)
+		}
+		if got := h.decode(raw); got["canceled"] != false {
+			t.Errorf("canceled = %v, want false", got["canceled"])
+		}
+	})
 
-	// Deleting only marks the event: it moves to the deleted category and the
-	// row stays, so it can still be read and brought back.
-	status, _, raw = h.do(http.MethodGet, path, "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("GET after delete status = %d, want 200 with the event still present", status)
-	}
-	if got := h.decode(raw); got["category_id"].(float64) != -1 {
-		t.Errorf("category_id = %v, want -1 after delete", got["category_id"])
-	}
+	t.Run("trash takes it off the calendar", func(t *testing.T) {
+		status, _, raw := h.do(http.MethodDelete, path, "", nil)
+		if status != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204; body: %s", status, raw)
+		}
+		if len(raw) != 0 {
+			t.Errorf("204 response must have an empty body, got: %s", raw)
+		}
 
-	// It stops appearing in range queries.
-	status, _, raw = h.do(http.MethodGet, "/api/v1/events?range=month&date=2026-03-11&tz=UTC", "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("status = %d", status)
-	}
-	if got := h.decode(raw); got["count"].(float64) != 0 {
-		t.Errorf("a deleted event still appeared in a range query: %v", got["count"])
-	}
+		status, _, raw = h.do(http.MethodGet, path, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("GET after trashing = %d, want the row to stay readable", status)
+		}
+		if got := h.decode(raw); got["deleted"] != true {
+			t.Errorf("deleted = %v, want true", got["deleted"])
+		}
 
-	// Deleting again is harmless rather than a 404: the event still exists.
-	if status, _, _ = h.do(http.MethodDelete, path, "", nil); status != http.StatusNoContent {
-		t.Errorf("second DELETE status = %d, want 204", status)
-	}
+		status, _, raw = h.do(http.MethodGet, month, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw); got["count"].(float64) != 0 {
+			t.Errorf("a trashed event still appeared in a range query: %v", got["count"])
+		}
 
-	// Remove is the destructive one, and only then is the event gone.
-	if status, _, _ = h.do(http.MethodPost, path+"/remove", "", nil); status != http.StatusNoContent {
-		t.Fatalf("remove status = %d, want 204", status)
-	}
-	status, _, raw = h.do(http.MethodGet, path, "", nil)
-	if status != http.StatusNotFound {
-		t.Fatalf("GET after remove status = %d, want 404", status)
-	}
-	if code := errorCode(t, h.decode(raw)); code != "not_found" {
-		t.Errorf("error code = %q", code)
-	}
+		// The trash is a listing of its own.
+		status, _, raw = h.do(http.MethodGet, month+"&deleted=true", "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw); got["count"].(float64) != 1 {
+			t.Errorf("deleted=true count = %v, want the trashed event", got["count"])
+		}
 
-	// Removing something gone is a 404.
-	if status, _, _ = h.do(http.MethodPost, path+"/remove", "", nil); status != http.StatusNotFound {
-		t.Errorf("second remove status = %d, want 404", status)
-	}
+		// Trashing twice is harmless.
+		if status, _, _ := h.do(http.MethodDelete, path, "", nil); status != http.StatusNoContent {
+			t.Errorf("second DELETE status = %d, want 204", status)
+		}
+	})
+
+	t.Run("trash is reversible", func(t *testing.T) {
+		status, _, raw := h.do(http.MethodPatch, path, `{"deleted":false}`, nil)
+		if status != http.StatusOK {
+			t.Fatalf("PATCH deleted=false = %d; body: %s", status, raw)
+		}
+		if got := h.decode(raw); got["deleted"] != false {
+			t.Errorf("deleted = %v, want false", got["deleted"])
+		}
+		status, _, raw = h.do(http.MethodGet, month, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw); got["count"].(float64) != 1 {
+			t.Errorf("restored event count = %v, want 1", got["count"])
+		}
+		// Put it back for the destroy step.
+		h.do(http.MethodDelete, path, "", nil)
+	})
+
+	t.Run("delete_forever destroys only what is in the trash", func(t *testing.T) {
+		// A live event refuses.
+		live := h.create(`{"title":"Live","start_at":1773205200}`)
+		livePath := fmt.Sprintf("/api/v1/events/%d", eventID(t, live))
+		status, _, raw := h.do(http.MethodPost, livePath+"/delete_forever", "", nil)
+		if status != http.StatusConflict {
+			t.Fatalf("delete_forever on a live event = %d, want 409; body: %s", status, raw)
+		}
+		if code := errorCode(t, h.decode(raw)); code != "not_in_trash" {
+			t.Errorf("error code = %q, want not_in_trash", code)
+		}
+
+		status, _, raw = h.do(http.MethodPost, path+"/delete_forever", "", nil)
+		if status != http.StatusNoContent {
+			t.Fatalf("delete_forever status = %d, want 204; body: %s", status, raw)
+		}
+		status, _, raw = h.do(http.MethodGet, path, "", nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("GET after delete_forever = %d, want 404", status)
+		}
+		if code := errorCode(t, h.decode(raw)); code != "not_found" {
+			t.Errorf("error code = %q", code)
+		}
+
+		// Destroying something gone is a 404, not a second success.
+		if status, _, _ := h.do(http.MethodPost, path+"/delete_forever", "", nil); status != http.StatusNotFound {
+			t.Errorf("second delete_forever status = %d, want 404", status)
+		}
+	})
 }
 
 func TestListFilters(t *testing.T) {
@@ -1054,7 +1188,8 @@ func TestIndexDocument(t *testing.T) {
 
 	for _, want := range []string{
 		"GET /api/v1/events",
-		"POST /api/v1/events/{id}/remove",
+		"POST /api/v1/events/{id}/cancel",
+		"POST /api/v1/events/{id}/delete_forever",
 		"GET /api/v1/reminders",
 		"PATCH /api/v1/reminders/{id}",
 		"GET /api/v1/categories",
@@ -1074,7 +1209,7 @@ func TestIndexDocument(t *testing.T) {
 		summaries[e["method"].(string)+" "+e["path"].(string)], _ = e["summary"].(string)
 	}
 	for _, path := range []string{"GET /api/v1/events", "GET /api/v1/reminders"} {
-		if !strings.Contains(summaries[path], "include_deleted") {
+		if !strings.Contains(summaries[path], "deleted=true") {
 			t.Errorf("index summary for %s does not mention include_deleted: %q", path, summaries[path])
 		}
 	}

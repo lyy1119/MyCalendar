@@ -86,7 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /help", s.handleHelp)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 
-	// Categories. Their ids may be negative, since -1 marks an event as deleted.
+	// Categories. Ids are 0 (the default) or a positive user category.
 	mux.HandleFunc("GET /api/v1/categories", s.handleListCategories)
 	mux.HandleFunc("POST /api/v1/categories", s.handleCreateCategory)
 	mux.HandleFunc("/api/v1/categories", s.methodNotAllowed("GET, POST"))
@@ -96,9 +96,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/categories/{id}", s.handleDeleteCategory)
 	mux.HandleFunc("/api/v1/categories/{id}", s.methodNotAllowed("GET, PATCH, DELETE"))
 
-	// Removing an event for good, as opposed to DELETE, which marks it.
-	mux.HandleFunc("POST /api/v1/events/{id}/remove", s.handleRemoveEvent)
-	mux.HandleFunc("/api/v1/events/{id}/remove", s.methodNotAllowed("POST"))
+	// DELETE moves an event to the trash; these two are the explicit verbs:
+	// cancel calls it off in place, delete_forever destroys a trashed event.
+	mux.HandleFunc("POST /api/v1/events/{id}/cancel", s.handleCancelEvent)
+	mux.HandleFunc("/api/v1/events/{id}/cancel", s.methodNotAllowed("POST"))
+
+	mux.HandleFunc("POST /api/v1/events/{id}/delete_forever", s.handleDeleteForeverEvent)
+	mux.HandleFunc("/api/v1/events/{id}/delete_forever", s.methodNotAllowed("POST"))
 
 	// Reminder collection.
 	mux.HandleFunc("GET /api/v1/reminders", s.handleListReminders)

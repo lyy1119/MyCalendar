@@ -2,7 +2,10 @@ package api
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 
+	"github.com/lyy1119/MyCalendar/internal/apperr"
 	"github.com/lyy1119/MyCalendar/internal/model"
 )
 
@@ -94,26 +97,16 @@ func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRemoveEvent deletes an event from the table for good.
+// parseCategoryID reads the {id} segment for a category.
 //
-// Separate from DELETE, which only marks the event as deleted and is
-// reversible.
-func (s *Server) handleRemoveEvent(w http.ResponseWriter, r *http.Request) {
-	id, err := parseID(r)
-	if err != nil {
-		s.writeError(w, r, err)
-		return
-	}
-	if err := s.svc.Remove(r.Context(), id); err != nil {
-		s.writeError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// parseCategoryID reads the {id} segment for a category. Category ids may be
-// negative (-1 is the deleted marker), so this cannot reuse the positive-only
-// event parser.
+// Category ids are now 0 (the default) or a positive user id: the -1 that used
+// to mean "deleted" became a column on the event, so a negative id is not a
+// category and is reported as a bad parameter.
 func parseCategoryID(r *http.Request) (int64, error) {
-	return parseSignedID("id", r.PathValue("id"))
+	raw := strings.TrimSpace(r.PathValue("id"))
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 0 {
+		return 0, apperr.Param("id", "must be a non-negative integer")
+	}
+	return id, nil
 }

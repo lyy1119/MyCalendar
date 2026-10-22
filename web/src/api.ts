@@ -17,8 +17,7 @@ export interface ApiCategory {
   display: boolean
 }
 
-/** The two ids the API gives a fixed meaning to. */
-export const CATEGORY_DELETED = -1
+/** The one id the API gives a fixed meaning to: everything starts here. */
 export const CATEGORY_UNCATEGORIZED = 0
 
 export interface CategoryInput {
@@ -45,6 +44,10 @@ export interface ApiEvent {
   event_date: string | null
   is_task: boolean
   is_completed: boolean
+  /** Called off: still on the calendar, drawn struck through. */
+  canceled: boolean
+  /** In the trash: off every listing until it is restored or destroyed. */
+  deleted: boolean
   category_id: number
   created_at: number
   updated_at: number
@@ -71,6 +74,10 @@ export interface EventInput {
   event_date?: string | null
   is_task?: boolean
   is_completed?: boolean
+  /** Called off, or back on. */
+  canceled?: boolean
+  /** In the trash (true) or back on the calendar (false). */
+  deleted?: boolean
   category_id?: number
   /**
    * Whole-set replacement of the event's reminders. Sending [] clears them;
@@ -148,6 +155,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload as T
 }
 
+export type SearchField = 'title' | 'location' | 'notes' | 'date'
+
 export interface ListParams {
   /**
    * Inclusive lower bound: RFC3339 with an offset, or Unix seconds. A value
@@ -157,12 +166,14 @@ export interface ListParams {
   /** Exclusive upper bound, same encodings as `from`. */
   to: string
   tz: string
-  /**
-   * Stop hiding events in the deleted category. The grid asks for them when the
-   * deleted category is switched on in the sidebar, so that toggling it shows
-   * what was thrown away rather than an empty result.
-   */
-  includeDeleted?: boolean
+  /** true lists the trash; omitted hides it, the way a calendar does. */
+  deleted?: boolean
+  /** Keep only canceled (or only uncanceled) events. */
+  canceled?: boolean
+  /** Free-text term, matched against `searchField`. */
+  q?: string
+  searchField?: SearchField
+  limit?: number
   signal?: AbortSignal
 }
 
@@ -173,7 +184,11 @@ export async function listEvents(params: ListParams): Promise<ApiEvent[]> {
     to: params.to,
     tz: params.tz,
   })
-  if (params.includeDeleted) query.set('include_deleted', 'true')
+  if (params.deleted !== undefined) query.set('deleted', String(params.deleted))
+  if (params.canceled !== undefined) query.set('canceled', String(params.canceled))
+  if (params.q) query.set('q', params.q)
+  if (params.searchField && params.searchField !== 'title') query.set('q_field', params.searchField)
+  if (params.limit) query.set('limit', String(params.limit))
   const data = await request<{ events?: ApiEvent[] }>(`/api/v1/events?${query.toString()}`, {
     signal: params.signal,
   })
@@ -202,13 +217,19 @@ export function updateEvent(id: number, input: EventInput, tz: string): Promise<
  * Delete an event, which marks it: it moves to the deleted category (id -1),
  * leaves the calendar, and can be brought back like any other category change.
  */
+/** Move an event to the trash: off the calendar, still recoverable. */
 export function deleteEvent(id: number): Promise<void> {
   return request<void>(`/api/v1/events/${id}`, { method: 'DELETE' })
 }
 
-/** Destroy an event for good, reminders included. There is no way back. */
-export function removeEvent(id: number): Promise<void> {
-  return request<void>(`/api/v1/events/${id}/remove`, { method: 'POST' })
+/** Call an event off without moving it: it stays on the calendar, canceled. */
+export function cancelEvent(id: number): Promise<void> {
+  return request<void>(`/api/v1/events/${id}/cancel`, { method: 'POST' })
+}
+
+/** Destroy a trashed event for good, reminders included. There is no way back. */
+export function deleteForeverEvent(id: number): Promise<void> {
+  return request<void>(`/api/v1/events/${id}/delete_forever`, { method: 'POST' })
 }
 
 /** Every category, including the seeded deleted and uncategorized rows. */

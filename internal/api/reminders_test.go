@@ -290,9 +290,9 @@ func TestReminderDelete(t *testing.T) {
 	}
 }
 
-// Deleting only marks an event, so its reminders stay in the table; removing it
-// for good is what cascades.
-func TestReminderCascadeOnEventRemove(t *testing.T) {
+// Trashing an event keeps its reminders in the table but drops them from the
+// listing; destroying it is what cascades.
+func TestReminderCascadeOnDeleteForever(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 	eventID := newEventForReminders(t, h, "会议")
 	addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460700}`, eventID))
@@ -300,25 +300,25 @@ func TestReminderCascadeOnEventRemove(t *testing.T) {
 	path := fmt.Sprintf("/api/v1/events/%d", eventID)
 	h.do(http.MethodDelete, path, "", nil)
 
-	// Still there, but no longer listed: a deleted event must not notify.
+	// Still there, but no longer listed: a trashed event must not notify.
 	status, _, raw := h.do(http.MethodGet, "/api/v1/reminders", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
 	if got := h.decode(raw); got["count"].(float64) != 0 {
-		t.Errorf("reminders of a deleted event are still listed: %v", got["count"])
+		t.Errorf("reminders of a trashed event are still listed: %v", got["count"])
 	}
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_deleted=true", "", nil)
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?deleted=true", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
 	if got := h.decode(raw); got["count"].(float64) != 1 {
-		t.Errorf("deleting the event dropped its reminders: %v", got["count"])
+		t.Errorf("trashing the event dropped its reminders: %v", got["count"])
 	}
 
-	h.do(http.MethodPost, path+"/remove", "", nil)
+	h.do(http.MethodPost, path+"/delete_forever", "", nil)
 
-	for _, query := range []string{"", "?include_deleted=true"} {
+	for _, query := range []string{"", "?deleted=true"} {
 		status, _, raw = h.do(http.MethodGet, "/api/v1/reminders"+query, "", nil)
 		if status != http.StatusOK {
 			t.Fatalf("status = %d", status)
@@ -329,7 +329,7 @@ func TestReminderCascadeOnEventRemove(t *testing.T) {
 	}
 }
 
-// The reminder of a deleted event is hidden from the collection but still
+// The reminder of a trashed event is hidden from the collection but still
 // readable by id, the same way the event itself behaves.
 func TestReminderListHidesDeletedEvents(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
@@ -366,13 +366,13 @@ func TestReminderListHidesDeletedEvents(t *testing.T) {
 	}
 
 	// include_deleted asks for them, and says so in the echoed filters.
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_deleted=true", "", nil)
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?deleted=true", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
 	got = h.decode(raw)
 	if got["count"].(float64) != 2 {
-		t.Errorf("include_deleted count = %v, want both reminders", got["count"])
+		t.Errorf("deleted=true count = %v, want both reminders", got["count"])
 	}
 
 	// The reminder itself is still addressable, like its event.
@@ -382,7 +382,7 @@ func TestReminderListHidesDeletedEvents(t *testing.T) {
 	}
 
 	// A bad value for the flag is a parameter error, not a silent false.
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_deleted=maybe", "", nil)
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?deleted=maybe", "", nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", status, raw)
 	}

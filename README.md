@@ -36,14 +36,14 @@
    **提醒（reminders）既可随日程整体写入，也可通过独立接口单独增删改查**。
 4. **时区处理**：存储与解释解耦，`tz` 参数按请求决定"这一天"的边界。
 5. **提醒（reminders）**：独立的增删改查接口，可随日程整体写入，但**不发送**任何通知。
-6. **分类（categories）**：独立的分类表与接口，日程只存 `category_id`，**一个日程只属于一个分类**。内置 `-1 删除`（灰色，名称固定，颜色可改）与 `0 默认`（蓝色，名称与颜色都可改）两个受保护分类（不可删除），其余 id 自增。改分类的名称或颜色，属于它的日程一起变——日程里存的是 id，不是颜色。每个分类还有一个 `display` 开关（存库），侧栏勾选它决定日历是否画这个分类；「删除」默认关闭。分类的增删改查有**独立页面**（左侧齿轮进入，路径 `/categories`）。
-7. **"删除"是标记，"移除"才是真删**：`DELETE /api/v1/events/{id}` 把日程的分类改成 `-1`（可恢复，仍可按 id 读到），`POST /api/v1/events/{id}/remove` 才会真正把行连同提醒一起毁掉。两者边界清晰，误点删除不会丢数据。
+6. **分类（categories）**：独立的分类表与接口，日程只存 `category_id`，**一个日程只属于一个分类**。内置 `0 默认` 一个受保护分类（不可删除，但名称与颜色都可改），其余 id 自增；分类 id 不会为负。改分类的名称或颜色，属于它的日程一起变——日程里存的是 id，不是颜色。每个分类还有一个 `display` 开关（存库），侧栏勾选它决定日历是否画这个分类。分类的增删改查有**独立页面**（左侧齿轮进入，路径 `/categories`）。
+7. **取消、回收站、永久删除是三件不同的事**：`events.canceled` 表示"事项取消"（日历上仍在，划掉显示）；`events.deleted` 表示"已进回收站"（不在任何列表里，但行还在）。`DELETE /api/v1/events/{id}` = 移到回收站，`POST …/{id}/cancel` = 取消，`POST …/{id}/delete_forever` = 真正删行（**只允许回收站里的日程**，否则 409 `not_in_trash`）。回收站有独立页面（左侧栏最底部入口，路径 `/trash`），可按标题/地点/备注/日期搜索，并逐条永久删除。
 8. **数据库自动迁移**：启动时检查格式版本并按主版本迁移，只支持逐个大版本升级，**详见[版本与数据迁移](#版本与数据迁移)**。
 9. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
 
-**前端**：React + FullCalendar，参考 Google Calendar 的深色版式，包含「4 天」与「周」两种视图、置顶的全天日程行、可滚动时间网格，点击日程即可编辑，侧栏齿轮里管理分类。
+**前端**：React + FullCalendar，参考 Google Calendar 的深色版式，包含「日」「4 天」「周」三种视图、置顶的全天日程行、可滚动时间网格，点击日程即可编辑；侧栏齿轮里管理分类，侧栏最底部进回收站。
 
-不包含（有意为之）：提醒推送、重复日程、跨多天的全天事件、鉴权/多用户、全文检索、回收站视图（删除的日程能按分类查出来，但没有批量恢复的界面）。
+不包含（有意为之）：提醒推送、重复日程、跨多天的全天事件、鉴权/多用户、全文检索、回收站的自动过期（不会定时清理，需要手动永久删除或由客户端批量处理）。
 
 ---
 
@@ -143,15 +143,18 @@ curl -s 'http://127.0.0.1:8080/api/v1/events?range=month&date=2026-03-11&tz=Asia
 curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
   -H 'Content-Type: application/json' -d '{"is_task":true,"is_completed":true}'
 
-# "删除"：标记为删除（分类改成 -1），仍可按 id 读到，也能恢复
+# 取消：仍在日历上，只是划掉
+curl -s -X POST -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1/cancel'
+
+# 移到回收站：离开所有列表，行还在
 curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1'
 
-# 恢复：把分类改回去（0 = 默认）
+# 从回收站恢复
 curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
-  -H 'Content-Type: application/json' -d '{"category_id":0}'
+  -H 'Content-Type: application/json' -d '{"deleted":false}'
 
-# 真正移除：行和它的提醒一起删掉，不可恢复
-curl -s -X POST -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1/remove'
+# 永久删除：只对回收站里的日程有效（先 DELETE 再这条）
+curl -s -X POST -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1/delete_forever'
 
 # 新建分类，把日程放进去
 curl -s -X POST 'http://127.0.0.1:8080/api/v1/categories' \
@@ -163,8 +166,8 @@ curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
 curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/categories/1' \
   -H 'Content-Type: application/json' -d '{"display":false}'
 
-# 把已删除的日程也一起列出来
-curl -s 'http://127.0.0.1:8080/api/v1/events?range=week&tz=Asia/Shanghai&include_deleted=true'
+# 列出回收站
+curl -s 'http://127.0.0.1:8080/api/v1/events?range=week&tz=Asia/Shanghai&deleted=true'
 
 # 只列某个分类
 curl -s 'http://127.0.0.1:8080/api/v1/events?range=month&tz=Asia/Shanghai&category_id=1'
@@ -238,20 +241,21 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | GET | `/api/v1/events` | 按日/周/月或自定义区间查询 |
 | GET | `/api/v1/events/{id}` | 查询单个日程（含提醒） |
 | PATCH | `/api/v1/events/{id}` | 部分更新 |
-| DELETE | `/api/v1/events/{id}` | "删除"：把日程标记为删除（分类改 `-1`），可恢复 |
-| POST | `/api/v1/events/{id}/remove` | 真正移除日程（行与提醒一起删，不可恢复） |
-| GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它）。**已删除日程的提醒默认不返回**，要查用 `include_deleted=true` |
+| POST | `/api/v1/events/{id}/cancel` | 取消事项：仍在日历上，划掉显示；`PATCH {"canceled":false}` 撤销 |
+| DELETE | `/api/v1/events/{id}` | 移到回收站（`deleted=1`）：离开所有列表，行还在，可 `PATCH {"deleted":false}` 恢复 |
+| POST | `/api/v1/events/{id}/delete_forever` | 真正删行（连提醒一起删）；**只允许回收站里的日程**，否则 409 `not_in_trash` |
+| GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它）。**回收站里日程的提醒默认不返回**，要查用 `deleted=true` |
 | POST | `/api/v1/reminders` | 给已存在的日程添加提醒 |
 | GET | `/api/v1/reminders/{id}` | 查询单个提醒 |
 | PATCH | `/api/v1/reminders/{id}` | 修改提醒时间 |
 | DELETE | `/api/v1/reminders/{id}` | 删除单个提醒（不动日程） |
-| GET | `/api/v1/categories` | 列出全部分类（含内置的 `-1`、`0`） |
+| GET | `/api/v1/categories` | 列出全部分类（含内置的 `0 默认`） |
 | POST | `/api/v1/categories` | 新建分类，id 自增且从 1 开始 |
 | GET | `/api/v1/categories/{id}` | 查询单个分类 |
-| PATCH | `/api/v1/categories/{id}` | 改分类的名称、颜色或显示开关（`-1` 只允许改颜色与开关） |
-| DELETE | `/api/v1/categories/{id}` | 删除分类，其下的日程移回「默认」（0）；`-1`/`0` 返回 409 |
+| PATCH | `/api/v1/categories/{id}` | 改分类的名称、颜色或显示开关 |
+| DELETE | `/api/v1/categories/{id}` | 删除分类，其下的日程移回「默认」（0）；`0` 返回 409 |
 
-日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed`、`category_id` 与 `reminders`；分类字段是 `id`、`name`、`color`（`#rrggbb`）与 `display`（侧栏是否显示，存库的展示偏好，不是权限）；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
+日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed`、`canceled`、`deleted`、`category_id` 与 `reminders`；分类字段是 `id`、`name`、`color`（`#rrggbb`）与 `display`（侧栏是否显示，存库的展示偏好，不是权限）；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
 
 时间戳的**输入**有三种等价写法，**存储**始终是 UTC 基准的 Unix 秒，不会因为你用哪种写法而改变：
 
@@ -263,9 +267,9 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 
 响应里除了 `start_at`/`end_at`（Unix 秒）之外，还给出 `start_at_local`/`end_at_local`（同一瞬时在本次请求 `tz` 下渲染的 RFC3339）。`from`/`to` 查询参数接受同样的三种写法。
 
-列表接口的过滤参数：`category_id`（只看某个分类；**显式指定优先于默认隐藏**，所以 `category_id=-1` 能列出已删除的日程）、`include_deleted=true`（把已删除的日程一起返回）、`is_task`、`is_completed`、`q`（标题子串）、`limit`/`offset`。`display` **不参与服务端过滤**——它是给人看的偏好，前端据此隐藏某些分类。
+列表接口的过滤参数：`category_id`（只看某个分类，0 是默认分类、不会为负）、`deleted=true|false`（`true` 只列回收站、`false` 只列正常日程、省略则隐藏回收站）、`canceled`（只看已取消/未取消）、`is_task`、`is_completed`、`q` 配合 `q_field=title|location|notes|date`（默认标题；`date` 时 `q` 必须是 `YYYY-MM-DD`）、`limit`/`offset`。`display` **不参与服务端过滤**——它是给人看的偏好，前端据此隐藏某些分类。
 
-提醒列表和日程列表遵循同一条规则：**分类为 `-1`（已删除）的日程，其提醒默认不出现在 `/api/v1/reminders` 里**——删掉的日程不该再提醒任何人，而轮询这个接口的客户端正是在找"接下来要做什么"。需要时用 `include_deleted=true` 取回；`/api/v1/reminders/{id}` 仍按 id 返回单条，与"已删除的日程仍可按 id 读到"保持一致。
+提醒列表和日程列表遵循同一条规则：**回收站里的日程，其提醒默认不出现在 `/api/v1/reminders` 里**——丢掉的事项不该再提醒任何人，而轮询这个接口的客户端正是在找"接下来要做什么"。需要时用 `deleted=true` 取回；`/api/v1/reminders/{id}` 仍按 id 返回单条，与"回收站里的日程仍可按 id 读到"保持一致。
 
 路由分工：`/` 归前端（任何非 `/api` 开头的路径都会返回前端外壳，这样前端路由刷新不会 404），`/api/*` 归机器，未知的 `/api/*` 路径仍然返回 JSON 404 而不会被前端吞掉。JSON 版的接口索引位于 `/api`（原先在 `/`，前端接管根路径后迁移）。
 
@@ -284,7 +288,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | 周视图（本周） | `timeGridWeek`；`今天` 按钮回到当前周 |
 | 回到今天 | 用 `customButtons` 自己定义，且**名字不能叫 `today`**——`customButtons` 里与内置按钮同名的条目会被静默忽略，于是拿到的还是内置按钮：它在"今天已在视野内"时就把自己置灰，而日历打开时就在今天，所以那个按钮几乎总是点不动。现在叫 `goToday` / `goWeek`。4 天与日视图显示**今天**，把今天放到**第一列**；周视图显示**本周**，回到本周，两者按 `data-view` 只显示匹配当前视图的那个 |
 | 跳转按钮的可用性 | 判据是**窗口**而不是日期：只有当渲染出来的窗口已经以今天（周视图：本周）开头时按钮才置灰——"今天在第二列"这种窗口仍然可点，因为确实还有地方可去。这是原内置按钮反着来的地方：它只看今天在不在视野里。`customButtons` 无法声明禁用态，所以每次 `datesSet` 后由 `syncJumpButtons` 同步 `disabled` |
-| 侧栏分类列表 | 迷你月历下方列出全部分类，每行左边是一个**就是色块本身的复选框**：勾选=用该分类颜色填满并打勾（勾的颜色按分类色算黑白），取消=只剩该颜色的描边。勾/取消会 `PATCH` 分类的 `display` 并存库，日历随即按分类过滤。默认只显示「默认」，**「删除」默认不显示**；勾上「删除」时请求会带 `include_deleted=true`，于是真的能看到被删除的日程 |
+| 侧栏分类列表 | 迷你月历下方列出全部分类，每行左边是一个**就是色块本身的复选框**：勾选=用该分类颜色填满并打勾（勾的颜色按分类色算黑白），取消=只剩该颜色的描边。勾/取消会 `PATCH` 分类的 `display` 并存库，日历随即按分类过滤 |
 | 侧栏迷你月历 | 每天是**正方形**（`aspect-ratio: 1 / 1`）。之前行高由内容决定，格子是高大于宽的长方形，看起来不像月历 |
 | 全天日程置顶 | `allDaySlot`，全天日程渲染在**日期表头下方、时间网格上方**的独立行里，不随时间滚动 |
 | 可滚动时间网格 | 日期表头与全天行固定，其下是**一个**滚动区，左时间轴固定、各天列共用该滚动区，因此各列小时线始终对齐（与截图一致） |
@@ -296,7 +300,8 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | 任务例外 | `is_task` 的日程**不跟随分类颜色**：未完成是青绿色（`var(--mc-task-*)`）半透明填充，完成后是亮绿色（`#34d399`）低透明度填充 + 同色左边条 + 删除线，既不刺眼又一眼可辨 |
 | 分类页面（齿轮） | 侧栏「新建日程」旁的齿轮进入 `/categories` 整页：列出全部分类，可改名称与颜色（原生取色器，落库为 `#rrggbb`）、可新增、可删除非内置分类；「删除」的名称固定不可改（颜色可改），其余都可改。删除分类时其下日程移回「默认」而不是跟着消失。是真实路径，刷新后仍停在该页，浏览器后退可用 |
 | 编辑弹窗的分类 | 「分类」下拉框左侧有该分类的颜色小方块，选哪个色块就变哪个；被"删除"过的日程会显示「已删除」一项，改成别的分类即等于恢复 |
-| 删除 vs 永久移除 | 弹窗底部的「删除」只是把日程移到「已删除」（确认框里也这么写），可恢复；只有已经处于「已删除」的日程才多出一个「永久移除」，它调 `POST /api/v1/events/{id}/remove`，连提醒一起删掉。破坏性按钮因此不会在正常流程里出现 |
+| 取消 vs 回收站 vs 永久删除 | 弹窗里有「已取消」开关（取消的事项仍画在日历上，标题与时间划掉）；底部「移到回收站」把日程从日历上拿走但不毁数据；**永久删除只在回收站页面**，每条右侧一个按钮，调 `POST /api/v1/events/{id}/delete_forever` |
+| 回收站页面 | 左侧栏最底部（修改按钮下方）的「回收站」进入 `/trash`：按时间顺序的竖直列表，每条高度统一（56px）、整块最大高度受限（超出内部滚动），左侧竖条是分类颜色；顶部搜索栏用下拉选择 **标题 / 地点 / 备注 / 日期**，选日期时占位符提示 `YYYY-MM-DD`；每条右侧是「永久删除」 |
 | 修改开关 | 左侧「外观」下方是一个**按钮**（不是复选框）：默认锁定显示「🔒 开启修改」，开启后变蓝显示「🔓 修改已开启」，点击即可切换，选择记在 `localStorage` |
 | 锁定时能做什么 | 只允许「新建日程」。锁定时点击日程打开的是**只读详情**（字段全部禁用、没有保存/删除按钮，底部给一个「开启修改」按钮就地解锁）；无法通过拖动空白处、点击全天行来新建，网格上的选择高亮也关掉，免得看起来能拖 |
 | 解锁后 | 点击日程进入编辑；拖动空白处或点全天行可新建 |
@@ -429,34 +434,30 @@ start_at < :range_end AND COALESCE(end_at, start_at + 1) > :range_start
 
 `remind_at` 是**绝对瞬时**，和 `start_at` 一样接受三种写法（Unix 秒 / 带偏移的 RFC3339 / 不带偏移的本地时间按 `tz` 解释）。API **没有**"提前 N 分钟"这种相对写法——那是 UI 的便利，界面上提供了几个常用档位，实际提交的仍是算好的绝对时间。删除日程时提醒通过 `ON DELETE CASCADE` 一并删除；删除提醒不影响日程。
 
-### 7. 分类、软删除与真删除
+### 7. 分类只是分组；取消、回收站、永久删除是三件事
 
-分类是一张独立的表，日程上只有一个 `category_id` 外键。**一个日程只能属于一个分类**——没有多对多，也没有"标签"这一层；需要多个维度时用颜色之外的东西（备注、标题前缀），而不是放宽这里。
+分类是一张独立的表，日程上只有一个 `category_id`。**一个日程只能属于一个分类**——没有多对多，也没有"标签"这一层。分类 id 只有 `0`（默认）和用户自建的 `1、2、3…`，**永远不会是负数**：上一版里 `-1 删除` 那个"用分类表示状态"的设计已经被取消。
 
-两个内置分类是这套设计的地基，它们不是"普通数据"，而是**枚举值**：
+现在状态由 `events` 上的两个布尔列表达，它们回答两个不同的问题：
 
-| id | 名称 | 颜色 | 含义 |
+| 列 | 含义 | 对日历的影响 | 怎么设置 |
 |---|---|---|---|
-| `-1` | 删除 | `#9aa0a6` | 被"删除"的日程。留在表里，任何区间查询默认都看不到它。名称固定 |
-| `0` | 默认 | `#1a73e8` | 新建日程的默认分类。名称与颜色都可改 |
+| `canceled` | 这个事项被取消了 | **仍然显示**，标题与时间划掉 | `POST /api/v1/events/{id}/cancel` 或 `PATCH {"canceled":true}` |
+| `deleted` | 这个事项进了回收站 | **不显示**，也不出现在提醒列表里 | `DELETE /api/v1/events/{id}` 或 `PATCH {"deleted":true}` |
 
 因此有三个必须守住的不变式：
 
-1. **"删除"是一次普通的分类赋值。** `DELETE /api/v1/events/{id}` 的行为就是把 `category_id` 写成 `-1`，与 `PATCH {"category_id": -1}` 完全等价——两者都会走到同一个服务层函数。恢复同理，把它改成别的分类即可。
-2. **默认隐藏，但可以显式要。** 所有区间查询与单个查询默认过滤 `category_id <> -1`；想看到删除的日程，用 `include_deleted=true`，或者直接指定 `category_id=-1`（**显式指定的分类优先于默认隐藏**，否则 `category_id=-1` 会返回空集，是个很隐蔽的坑）。
-3. **`-1` 和 `0` 删不掉。** 一旦删掉这两个 id，所有"删除"和"默认"的语义就塌了，所以 `DELETE /api/v1/categories/-1` 返回 409 `category_protected`。**颜色两个都可以改**（有人就是想把删除色改成红灰）。名称则分开处理：`0` 是普通分组，随便改；`-1` 的名字被锁住，改它返回 409 `category_name_fixed`——"-1 表示已删除"是关于 API 的陈述，如果名字能改，`category_id = -1` 的含义就取决于数据了。
+1. **取消不是删除。** 取消掉的会议仍然占着日历上那个位置——"这件事被取消了"本身就是信息。它保留了分类和提醒（`canceled` 不影响提醒），所以划掉以后还能看到"原本要做什么"。撤销就是 `PATCH {"canceled":false}`。
+2. **回收站是"移走"，不是"毁掉"。** `DELETE` 只把 `deleted` 置 1：行还在、提醒还在、按 id 仍然读得到，但所有列表默认过滤 `deleted = 0`（要列回收站就 `deleted=true`）。恢复是 `PATCH {"deleted":false}`。
+3. **永久删除只有一个入口，而且要求两步。** `POST /api/v1/events/{id}/delete_forever` 才真的 `DELETE FROM events`（提醒靠 `ON DELETE CASCADE` 跟着消失），并且**只接受已经在回收站里的日程**——否则返回 409 `not_in_trash`。误点一次不会毁掉数据，这是刻意的。
 
-删除一个普通分类时，其下日程在**同一个事务里**被移回 `0`，而不是级联删除。理由很直接：用户想删的是"这个分类"，不是"这个分类里的日程"。
+回收站没有自动过期：被移进去的行会一直留着，直到有人永久删除。将来要做定时清理时，清理的判据就是 `deleted = 1` 且足够旧。
 
-`display` 是**展示偏好，不是权限**：它记录"我想不想在日历上看到它"，存库只是为了刷新之后还记得、并且各端一致。隐藏一个分类不会移动它的事件，列表接口也照旧返回它们——过滤发生在渲染这一层。唯一的例外是内置的「删除」：事件本来就被服务端默认挡住，所以勾上它时前端会把 `include_deleted=true` 带上，否则勾了也什么都看不到。
+`display` 是**展示偏好，不是权限**：它记录"我想不想在日历上看到这个分类"，存库只是为了刷新之后还记得、并且各端一致。隐藏一个分类不会移动它的事件，列表接口也照旧返回它们——过滤发生在渲染这一层。
 
-内置分类的默认值如果在早期构建里被写成过别的（`未分类` + 白色），启动时会把**仍然停在旧默认值**的行改成当前默认名与颜色；你改过的名字或颜色不会被覆盖。这属于种子数据的修正而不是表结构变化，所以没有单独的格式版本步骤，格式仍然是 2。
+删掉一个分类时，其下日程在**同一个事务里**被移回 `0`，而不是级联删除：用户想删的是"这个分类"，不是"这个分类里的日程"。`0` 本身不能删（409 `category_protected`），但它的名称和颜色随便改。
 
-`display` 列同理，但时机不同：它是**直接改 1→2 那一步**加上的（而不是新开 2→3 步骤），因为改的那一刻 `v2.0.0` 还没打出来。格式 2 随后随 `v2.0.0` 发布，`v2.0.1` 也仍是格式 2，所以从这一刻起**格式 2 已经是"已发布"的格式**：之后再改表结构就必须开 format 3，不能再去改 1→2。
-
-副作用是"2.0.0 打出来之前的中间构建"写过的库会声称格式 2 却没有这一列，启动时会检测并 `ALTER TABLE` 补上（并把「删除」置为 0）——这条自愈既救了那些预发布库，也保证了已经发布的结构不会被误判。有专门测试覆盖。
-
-真正把行毁掉只有一个入口：`POST /api/v1/events/{id}/remove`。它走 `DELETE FROM events`，提醒靠 `ON DELETE CASCADE` 跟着消失。**没有批量移除接口**——破坏性操作保持一条一条来。
+内置分类的默认值如果在早期构建里被写成过别的（`未分类` + 白色），启动时会把**仍然停在旧默认值**的行改成当前默认名与颜色；你改过的名字或颜色不会被覆盖。
 
 ---
 
@@ -712,7 +713,9 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 
 **规则：只要改动了数据库格式，就必须升主版本号。** 反过来不成立——有时候只是改了 API 也会升主版本，那种情况下**不需要写迁移**。
 
-当前已发布的格式是 **2**（`v2.0.0` 起，`v2.0.1` 同样是 2）。所以从现在开始，任何表结构的改动都要**新开 format 3** 并在 `migrations` 里加一条 `{from: 2, to: 3, ...}`，而不是去改已有的 1→2——那一步已经在别人的库里执行过了。
+当前格式是 **3**（本版新增；`v2.0.0`/`v2.0.1` 是格式 2）。`FormatVersion = 3`，迁移表里第三步就是它：给 `events` 加 `canceled` 与 `deleted`，把格式 2 里靠 `category_id = -1` 表示"已删除"的日程落到默认分类并把 `deleted` 置 1，然后删掉那一行 `-1 分类`。
+
+注意这带来一个跨版本后果：**`v1.x` 的库不能直接升到本版**。格式 1 差了两个大版本，"逐个大版本"的规则会拒绝启动，必须先跑一遍 `v2.x`（它会把库升到格式 2），再升本版。
 
 ### 升级前必读：只能逐个主版本升级
 
@@ -737,7 +740,7 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 1. 打开数据库，读 `meta` 表里的 `format_version`
 2. 没有这个表或没有这个值 → 认为是很久以前（`v1.0.0` 之前）写的库，格式按 `0` 处理
 3. 比当前版本旧 → 执行对应迁移，**每一步都在一个事务里完成，并同时更新版本号**；中途断电或被杀，下次启动会从原状态重来，不会留下半迁移的库
-4. 等于当前版本 → 什么都不做（所以每次启动都会检查，重复启动是安全的）；唯一例外是内置分类：`-1 删除` 与 `0 默认` 属于 API 契约而不是用户数据，万一库里没有它们（迁移被打断、手工改过文件），启动时会用 `INSERT OR IGNORE` 补回，并把仍停在旧默认值的行改成当前默认值；你给它们改过的名字和颜色不受影响
+4. 等于当前版本 → 什么都不做（所以每次启动都会检查，重复启动是安全的）；唯一例外是内置分类 `0 默认`：它属于 API 契约而不是用户数据，万一库里没有它（迁移被打断、手工改过文件），启动时会用 `INSERT OR IGNORE` 补回，并把仍停在旧默认值的行改成当前默认值；你给它改过的名字和颜色不受影响
 5. 比当前版本新 → 拒绝启动，提示你升级服务端而不是降级
 
 数据库格式版本与当前二进制的对应关系写在 `internal/store/migrate.go` 顶部的注释里。
@@ -748,21 +751,19 @@ curl -s http://127.0.0.1:8080/healthz   # version 字段即 1.2.3
 
 ```go
 // FormatVersion 必须与发布的主版本号保持一致
-const FormatVersion = 2
+const FormatVersion = 3
 
 // migrations[i] 把格式从 i 升到 i+1
 var migrations = []step{
-    {from: 0, to: 1, notes: "add events.location", apply: func(ctx, tx) error {
-        _, err := tx.ExecContext(ctx, `ALTER TABLE events ADD COLUMN location TEXT`)
-        return err
-    }},
-    {from: 1, to: 2, notes: "add categories, and events.category_id", apply: func(ctx, tx) error {
-        // categoriesSchema / seedCategories 与"全新库"共用同一份定义，
-        // 所以迁移来的库和新建的库不可能长成两个样子
-        return nil
-    }},
-    // 下一个主版本写在这里。格式没变就留空 apply：
-    // {from: 2, to: 3, notes: "no format change", apply: nil},
+    {from: 0, to: 1, notes: "add events.location", apply: ...},
+    {from: 1, to: 2, notes: "add categories, and events.category_id", apply: ...},
+    {from: 2, to: 3, notes: "canceled and deleted on events; the deleted category becomes the trash",
+        apply: func(ctx, tx) error {
+            // ALTER TABLE 只能追加，所以两列排在最后；currentSchema 里顺序一致
+            // 旧版用 category_id = -1 表示"已删除" → 落到默认分类 + 进回收站
+            // 然后删掉 -1 这行分类，-1 从此不再是合法 id
+            return nil
+        }},
 }
 ```
 
@@ -807,7 +808,9 @@ cd web && npm run build       # 前端构建
 - **PATCH 语义**：缺省/置空/赋值三态、`{}` 空操作、全天与定时相互转换、`created_at` 不变而 `updated_at` 刷新。
 - **校验**：标题与备注长度上限（按字符计，CJK 友好）、提醒数量上限与去重排序、时间戳越界与"毫秒当成秒"的识别提示、非法 `tz`/`range`/`date`/`from,to` 组合。
 - **HTTP 层**：状态码与错误信封、未定义字段拒绝、带 `Allow` 头的 405、未知路径的 JSON 404、CORS 预检、`/help` 文档与实际路由及限额一致。
-- **分类**：内置 `-1`/`0` 的种子与保护（删除返回 409；`-1` 改名返回 409 `category_name_fixed`，`-1` 改色与 `0` 改名都允许）；默认值变更只作用于仍停在旧默认值的行、名称长度与颜色格式（`#abc` 规范化为 `#aabbcc`、`blue` 被拒）、删分类把其下日程移回 0、`-1` 与 `DELETE` 的等价性、`include_deleted` 与 `category_id=-1` 的查询优先级、`/remove` 之后按 id 查不到。
+- **分类**：内置 `0 默认` 的种子与保护（删除返回 409）、名称长度与颜色格式（`#abc` 规范化为 `#aabbcc`、`blue` 被拒）、删分类把其下日程移回 0、`display` 的存改查、分类 id 不能为负。
+- **取消 / 回收站 / 永久删除**：`cancel` 后仍在区间查询里且 `canceled=true`、取消幂等、`DELETE` 后从列表消失但按 id 可读、`deleted=true` 才列出、`PATCH {"deleted":false}` 恢复、`delete_forever` 只接受回收站里的日程（否则 409 `not_in_trash`）、回收站里日程的提醒默认不出现在 `/api/v1/reminders`、按标题/地点/备注/日期搜索（`q_field`）。
+- **迁移到 format 3**：v2.0.2 的库升上来后 `canceled`/`deleted` 两列出现、原来 `-1` 分类里的日程落到 `0` 且 `deleted=1`、`-1` 分类行被删除、非负分类校验生效；v1 的库仍按"逐个大版本"规则被拒绝（要先跑 v2）。
 - **迁移**：格式 0 → 1 → 2 的真实升级，`v1` 库升到 `v2` 后分类齐全、日程全部落到 0、备注/地点/任务/提醒都不丢；"全新库"与"迁移来的库"列集合与顺序必须一致；跨主版本跳级会被拒绝。
 - **并发**：24 个 goroutine 并发写入不出现 `database is locked`。
 - **前端路由**：`/` 归前端、未知 `/api/*` 仍返回 JSON 404、API 路径不会被 SPA 吞掉。
@@ -833,7 +836,7 @@ internal/webui/          内嵌并托管前端产物（webui_embedded 构建标�
 internal/api/            HTTP 层：路由、中间件、请求解析、错误映射
   ├── api.go             服务器装配、中间件（恢复/日志/CORS）、响应与错误信封
   ├── query.go           查询参数解析（tz、range/date、from/to、过滤、分页）
-  ├── events.go          日程各接口的处理器（含软删除与 /remove）
+  ├── events.go          日程各接口的处理器（含取消、回收站、永久删除）
   ├── categories.go      分类各接口的处理器
   └── help.go            /help 文档的数据结构与 Markdown 渲染
 internal/service/        领域层：校验与规范化（"字段该如何理解"都在这里）
@@ -849,11 +852,11 @@ internal/apperr/         错误分类（校验错误、参数错误、未找到�
 
 数据表（在需求给定的基础上，只增加了分类相关的内容与索引）：
 
-- `events`：`id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, location, created_at, updated_at, category_id`
+- `events`：`id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, location, created_at, updated_at, category_id, canceled, deleted`
 - `reminders`：`id, event_id, remind_at, created_at`
-- `categories`：`id, name, color, display`（`color` 存 `#rrggbb` 文本；`display` 为 1/0，表示侧栏是否显示；`-1` 删除、`0` 默认，其余自增）
+- `categories`：`id, name, color, display`（`color` 存 `#rrggbb` 文本；`display` 为 1/0，表示侧栏是否显示；`0` 默认，其余自增，id 不会为负）
 
-索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`events(category_id)`、`reminders(event_id)`、`reminders(remind_at)`。
+索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`events(category_id)`、`events(deleted)`、`reminders(event_id)`、`reminders(remind_at)`。
 
 `location` 与 `category_id` 是给 `events` 后加的列：`ALTER TABLE` 只能往表尾追加，所以 `currentSchema` 里也把它们放在最后，否则"全新库"和"迁移来的库"列顺序不同（有一条测试专门比对两者的列集合与顺序）。`categories.display` 不需要这样处理——它是在 1→2 这一步**还没发布**时直接写进建表语句的（`categories` 表本来就是这一步新建的）。
 
