@@ -439,6 +439,27 @@ try {
   const afterComplete = await api(`/api/v1/events/${task.body.id}?tz=${encodeURIComponent(TZ)}`)
   check('a task can be marked complete', afterComplete.body?.is_completed === true, `is_completed=${afterComplete.body?.is_completed}`)
 
+  // A completed task is struck through on the grid, the same way a canceled
+  // event is: the line carries the state, and the title is not dimmed with it.
+  const doneStyling = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('.mc-calendar .fc-timegrid-event')].find((n) =>
+      n.textContent.includes('任务日程'),
+    )
+    if (!el) return null
+    const title = el.querySelector('.fc-event-title')
+    return {
+      done: el.classList.contains('mc-done'),
+      decoration: title ? getComputedStyle(title).textDecorationLine : null,
+      opacity: title ? getComputedStyle(title).opacity : null,
+    }
+  })
+  check(
+    'a completed task is struck through',
+    doneStyling?.done === true && doneStyling?.decoration === 'line-through',
+    JSON.stringify(doneStyling),
+  )
+  check('and is not faded as well', doneStyling?.opacity === '1', `opacity=${doneStyling?.opacity}`)
+
   // ------------------------------------------------- create by dragging
 
   // Drag inside the last day column, which has no seeded events, locating its

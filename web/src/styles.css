@@ -815,6 +815,14 @@ body {
   color: var(--mc-done-text);
 }
 
+/* A finished task is struck through, like a canceled one: the line is the
+   message. The title is not dimmed as well -- that costs the contrast the
+   green was chosen for, and "done" is already carried by the colour. */
+.fc .mc-done .fc-event-title,
+.fc .mc-done .fc-event-time {
+  text-decoration: line-through;
+}
+
 /* A canceled event keeps its colour and its place: the strike-through is the
    message, so it must not also fade the text into illegibility. */
 .fc .mc-canceled .fc-event-title,
