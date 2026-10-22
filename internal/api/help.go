@@ -45,6 +45,8 @@ type helpConventions struct {
 	UnknownFields    string `json:"unknown_fields"`
 	EmptyCollections string `json:"empty_collections"`
 	DeleteReturns    string `json:"delete_returns"`
+	Frontend         string `json:"frontend"`
+	CORS             string `json:"cors"`
 }
 
 type helpTimezone struct {
@@ -167,7 +169,8 @@ func (s *Server) buildHelp() helpDoc {
 			"POST /api/v1/events -- create an event",
 			"GET /api/v1/events?range=day&date=2026-03-10&tz=Asia/Shanghai -- list one day",
 			"PATCH /api/v1/events/1 -- change any subset of fields",
-			"DELETE /api/v1/events/1 -- remove an event",
+			"DELETE /api/v1/events/1 -- mark an event as deleted (it can be restored)",
+			"POST /api/v1/events/1/remove -- destroy the row, reminders included",
 		},
 		Conventions: helpConventions{
 			BasePath:         "/api/v1",
@@ -176,7 +179,9 @@ func (s *Server) buildHelp() helpDoc {
 			IntervalStyle:    "Every time window is half-open: [start, end). A window contains an instant if start <= instant < end.",
 			UnknownFields:    "Rejected with 400 invalid_parameter. A misspelled field never silently disappears.",
 			EmptyCollections: "List endpoints return [] rather than null. reminders is always an array.",
-			DeleteReturns:    "204 No Content with an empty body.",
+			DeleteReturns:    "204 No Content with an empty body. Deleting an event twice is still 204: the row exists and is marked, so the call is idempotent. Only /remove can answer 404 for a missing event.",
+			Frontend:         "GET / serves the web client, and any other non-/api path returns the same shell so client routes such as /categories survive a refresh. /api/* is never swallowed by it.",
+			CORS:             "Controlled by the MYCAL_CORS_ORIGINS environment variable, default *, so a browser client on another origin can call the API directly. Preflight OPTIONS requests are answered; tune it if the service is reachable beyond a trusted network.",
 		},
 		Timezone: helpTimezone{
 			ServerDefault:    s.opts.DefaultLocation.String(),
@@ -209,7 +214,7 @@ func (s *Server) buildHelp() helpDoc {
 					{Name: "event_date", Type: "TEXT NULL", Description: "The calendar date YYYY-MM-DD of an all-day event. Null for timed events."},
 					{Name: "is_task", Type: "INTEGER NOT NULL DEFAULT 0", Description: "1 if the event is completable."},
 					{Name: "is_completed", Type: "INTEGER NOT NULL DEFAULT 0", Description: "1 if a task is done. Forced to 0 whenever is_task is 0."},
-					{Name: "category_id", Type: "INTEGER NOT NULL DEFAULT 0", Description: "The event's single category. 0 means uncategorized; -1 means the event has been deleted, which is what deleting does."},
+					{Name: "category_id", Type: "INTEGER NOT NULL DEFAULT 0", Description: "The event's single category. 0 is the default category; -1 means the event has been deleted, which is what deleting does."},
 					{Name: "created_at", Type: "INTEGER NOT NULL", Description: "Insert instant, Unix seconds. Server-managed."},
 					{Name: "updated_at", Type: "INTEGER NOT NULL", Description: "Last modification instant, Unix seconds. Server-managed, refreshed on every successful PATCH."},
 				},
@@ -316,6 +321,13 @@ func (s *Server) buildHelp() helpDoc {
 				},
 				Success:     "200 with the reference document",
 				CurlExample: "curl -s http://localhost:8080/help",
+			},
+			{
+				Method:      "GET",
+				Path:        "/api",
+				Summary:     "Discovery document: service name, version, timezone, auth note and a one-line index of every endpoint. This is what a client or agent can read before parsing /help.",
+				Success:     "200 with service, version, endpoints, timezone and server_time",
+				CurlExample: "curl -s http://localhost:8080/api",
 			},
 			{
 				Method:      "GET",
@@ -466,7 +478,7 @@ func (s *Server) buildHelp() helpDoc {
 			{
 				Method:      "GET",
 				Path:        "/api/v1/categories",
-				Summary:     "List every category, including the built-in deleted (-1) and uncategorized (0) rows. Ordered by id, so the built-ins come first.",
+				Summary:     "List every category, including the built-in deleted (-1) and default (0) rows. Ordered by id, so the built-ins come first. Each row carries display, the stored show/hide preference.",
 				Success:     "200 with count and categories",
 				CurlExample: "curl -s http://localhost:8080/api/v1/categories",
 			},
@@ -474,11 +486,11 @@ func (s *Server) buildHelp() helpDoc {
 				Method:  "POST",
 				Path:    "/api/v1/categories",
 				Summary: "Create a category. The id is assigned automatically and starts at 1; -1 and 0 already exist and cannot be recreated.",
-				Body:    `{"name": "Work", "color": "#4f8cff"}`,
+				Body:    `{"name": "Work", "color": "#1a73e8", "display": true}`,
 				Success: "201 with the created category, a Location header and the assigned id",
 				Errors:  []string{"400 validation_failed", "400 invalid_body"},
 				CurlExample: `curl -s -X POST http://localhost:8080/api/v1/categories \
-  -H 'Content-Type: application/json' -d '{"name":"Work","color":"#4f8cff"}'`,
+  -H 'Content-Type: application/json' -d '{"name":"Work","color":"#1a73e8"}'`,
 			},
 			{
 				Method:      "GET",
@@ -491,7 +503,7 @@ func (s *Server) buildHelp() helpDoc {
 			{
 				Method:  "PATCH",
 				Path:    "/api/v1/categories/{id}",
-				Summary: "Rename a category or change its colour, including the built-in ones. Events pick the change up because they store only the id. Category -1 accepts a colour but not a new name.",
+				Summary: "Rename a category, recolour it, or show/hide it in the sidebar -- including the built-in ones. Events pick a name or colour change up because they store only the id. Category -1 accepts a colour and a display value but not a new name.",
 				Body:    `{"color": "#34d399"}`,
 				Success: "200 with the complete category after normalisation",
 				Errors:  []string{"400 validation_failed", "400 invalid_body", "404 not_found", "409 category_name_fixed"},
@@ -544,6 +556,7 @@ func (s *Server) buildHelp() helpDoc {
 			{Name: "id", Type: "integer", Description: "Event identifier, used in the path of every single-event endpoint."},
 			{Name: "title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at", Type: "see the data model", Description: "The stored row, exactly as persisted."},
 			{Name: "category_id", Type: "integer", Description: "The event's category. Look it up in GET /api/v1/categories for its name and colour."},
+			{Name: "categories", Type: "array of objects", Description: "On category responses: id, name, color and display. display is the stored show/hide preference; the list endpoints do not filter on it."},
 			{Name: "reminders", Type: "array", Description: "The event's reminders, ordered by remind_at. Each has id, event_id, remind_at, created_at and remind_at_local."},
 			{Name: "start_at_local", Type: "string", Description: "Derived: start_at rendered as RFC3339 in the request timezone. Read-only."},
 			{Name: "end_at_local", Type: "string or null", Description: "Derived: end_at rendered as RFC3339 in the request timezone. Null when end_at is null. Read-only."},
@@ -647,12 +660,12 @@ func (s *Server) buildHelp() helpDoc {
 				Description: "A category is just a name and a colour. Events reference it by id, so renaming or recolouring updates every event at once.",
 				Request: "POST /api/v1/categories\n" +
 					"Content-Type: application/json\n\n" +
-					`{"name":"Work","color":"#4f8cff"}` + "\n\n" +
+					`{"name":"Work","color":"#1a73e8"}` + "\n\n" +
 					"PATCH /api/v1/events/1\n" +
 					"Content-Type: application/json\n\n" +
 					`{"category_id":1}`,
 				Response: "201 Created\n" +
-					`{"id":1,"name":"Work","color":"#4f8cff"}` + "\n\nthen 200 OK with the event carrying \"category_id\":1",
+					`{"id":1,"name":"Work","color":"#1a73e8"}` + "\n\nthen 200 OK with the event carrying \"category_id\":1",
 			},
 			{
 				Title:       "A validation failure",
@@ -723,6 +736,8 @@ func renderHelpText(d helpDoc) string {
 	line("- Unknown fields: %s", d.Conventions.UnknownFields)
 	line("- Empty collections: %s", d.Conventions.EmptyCollections)
 	line("- Delete: %s", d.Conventions.DeleteReturns)
+	line("- Frontend: %s", d.Conventions.Frontend)
+	line("- CORS: %s", d.Conventions.CORS)
 	line("")
 
 	line("## Timezones")

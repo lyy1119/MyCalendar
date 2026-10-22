@@ -138,9 +138,10 @@ curl -s 'http://127.0.0.1:8080/api/v1/events?range=day&date=2026-03-11&tz=Asia/S
 curl -s 'http://127.0.0.1:8080/api/v1/events?range=week&date=2026-03-11&tz=Asia/Shanghai'
 curl -s 'http://127.0.0.1:8080/api/v1/events?range=month&date=2026-03-11&tz=Asia/Shanghai'
 
-# 修改：把任务标记为已完成
+# 修改：把日程标记为"任务"并置为已完成
+# （is_completed 只对 is_task=true 的日程有意义，否则服务端会把它规范化为 false）
 curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
-  -H 'Content-Type: application/json' -d '{"is_completed":true}'
+  -H 'Content-Type: application/json' -d '{"is_task":true,"is_completed":true}'
 
 # "删除"：标记为删除（分类改成 -1），仍可按 id 读到，也能恢复
 curl -s -X DELETE -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8080/api/v1/events/1'
@@ -157,6 +158,16 @@ curl -s -X POST 'http://127.0.0.1:8080/api/v1/categories' \
   -H 'Content-Type: application/json' -d '{"name":"工作","color":"#1a73e8"}'
 curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/events/1' \
   -H 'Content-Type: application/json' -d '{"category_id":1}'
+
+# 侧栏里不显示这个分类（display 存库；不影响数据，只是不画）
+curl -s -X PATCH 'http://127.0.0.1:8080/api/v1/categories/1' \
+  -H 'Content-Type: application/json' -d '{"display":false}'
+
+# 把已删除的日程也一起列出来
+curl -s 'http://127.0.0.1:8080/api/v1/events?range=week&tz=Asia/Shanghai&include_deleted=true'
+
+# 只列某个分类
+curl -s 'http://127.0.0.1:8080/api/v1/events?range=month&tz=Asia/Shanghai&category_id=1'
 ```
 
 ---
@@ -197,7 +208,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | `MYCAL_ADDR` | `:8080` | HTTP 监听地址。内网自用建议 `127.0.0.1:8080` 或明确的网卡地址。 |
 | `MYCAL_DB` | `mycalendar.db` | SQLite 文件路径。**首次运行会自动创建数据库文件；若其所在目录不存在，也会自动创建**（目录权限 `0750`）。路径中不能包含 `?` 或 `#`（会与 DSN 语法冲突，启动时明确报错）。 |
 | `MYCAL_TZ` | `Local` | 服务默认时区（IANA 名称，如 `Asia/Shanghai`）。请求可用 `tz` 参数覆盖。 |
-| `MYCAL_WEEK_START` | `monday` | 周视图起始日，`monday` 或 `sunday`。 |
+| `MYCAL_WEEK_START` | `monday` | `range=week` 的起始日，`monday` 或 `sunday`。**只影响 API**：前端自己按 `from`/`to` 取数，日历固定以周一为一周之首，所以改这个变量不会把界面变成周日开头。 |
 | `MYCAL_CORS_ORIGINS` | `*` | 允许的跨域来源，逗号分隔；`*` 表示任意来源。 |
 | `MYCAL_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`。 |
 | `MYCAL_TRUST_PROXY` | `false` | 预留，用于反向代理场景。 |
@@ -240,7 +251,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | PATCH | `/api/v1/categories/{id}` | 改分类的名称、颜色或显示开关（`-1` 只允许改颜色与开关） |
 | DELETE | `/api/v1/categories/{id}` | 删除分类，其下的日程移回「默认」（0）；`-1`/`0` 返回 409 |
 
-日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed`、`category_id` 与 `reminders`；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
+日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed`、`category_id` 与 `reminders`；分类字段是 `id`、`name`、`color`（`#rrggbb`）与 `display`（侧栏是否显示，存库的展示偏好，不是权限）；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
 
 时间戳的**输入**有三种等价写法，**存储**始终是 UTC 基准的 Unix 秒，不会因为你用哪种写法而改变：
 
@@ -251,6 +262,8 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | 不带偏移的本地时间 | `"2026-03-11T13:00"` | **按本次请求的 `tz` 解释** |
 
 响应里除了 `start_at`/`end_at`（Unix 秒）之外，还给出 `start_at_local`/`end_at_local`（同一瞬时在本次请求 `tz` 下渲染的 RFC3339）。`from`/`to` 查询参数接受同样的三种写法。
+
+列表接口的过滤参数：`category_id`（只看某个分类；**显式指定优先于默认隐藏**，所以 `category_id=-1` 能列出已删除的日程）、`include_deleted=true`（把已删除的日程一起返回）、`is_task`、`is_completed`、`q`（标题子串）、`limit`/`offset`。`display` **不参与服务端过滤**——它是给人看的偏好，前端据此隐藏某些分类。
 
 路由分工：`/` 归前端（任何非 `/api` 开头的路径都会返回前端外壳，这样前端路由刷新不会 404），`/api/*` 归机器，未知的 `/api/*` 路径仍然返回 JSON 404 而不会被前端吞掉。JSON 版的接口索引位于 `/api`（原先在 `/`，前端接管根路径后迁移）。
 
@@ -808,7 +821,7 @@ web/                     前端源码（React + TypeScript + FullCalendar）
   ├── src/api.ts         API 客户端（时间一律 Unix 秒，附带浏览器时区）
   ├── src/eventMapping.ts API / FullCalendar / 编辑弹窗三方的字段互转
   ├── src/time.ts        时区与本地时间字符串工具
-  ├── src/components/    日历面板、编辑弹窗、侧栏、分类设置弹窗
+  ├── src/components/    日历面板、编辑弹窗、侧栏（含分类显示列表）、分类页面
   └── e2e/               可选的浏览器端验证
 internal/webui/          内嵌并托管前端产物（webui_embedded 构建标签）
 internal/api/            HTTP 层：路由、中间件、请求解析、错误映射
@@ -818,17 +831,17 @@ internal/api/            HTTP 层：路由、中间件、请求解析、错误�
   ├── categories.go      分类各接口的处理器
   └── help.go            /help 文档的数据结构与 Markdown 渲染
 internal/service/        领域层：校验与规范化（"字段该如何理解"都在这里）
-  └── categories.go      分类的颜色/名称规范化，以及 -1 与 0 的保护规则
+  └── categories.go      分类的名称/颜色规范化、display 的默认值，以及 -1 名称固定的规则
 internal/store/          SQLite 持久化：增删改查、区间查询
   ├── categories.go      分类表的读写；删分类时把其下日程移回 0
   └── migrate.go         数据库格式版本与按主版本迁移的步骤表（改大版本时改这里）
 internal/calendar/       时区相关的日历窗口计算（日/周/月/自定义）
-internal/model/          与表结构一一对应的类型，以及 Optional / EventView
+internal/model/          与表结构一一对应的类型（Category 含 display），以及 Optional / EventView
 internal/config/         环境变量配置
 internal/apperr/         错误分类（校验错误、参数错误、未找到）
 ```
 
-数据表（与需求给定的一致；实现只额外加了索引）：
+数据表（在需求给定的基础上，只增加了分类相关的内容与索引）：
 
 - `events`：`id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, location, created_at, updated_at, category_id`
 - `reminders`：`id, event_id, remind_at, created_at`
@@ -836,11 +849,11 @@ internal/apperr/         错误分类（校验错误、参数错误、未找到�
 
 索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`events(category_id)`、`reminders(event_id)`、`reminders(remind_at)`。
 
-`location` 和 `category_id` 是后加的列，因为 `ALTER TABLE` 只能往表尾追加，`currentSchema` 里也把它们放在最后——否则"全新库"和"迁移来的库"列顺序不同（有一条测试专门比对两者的列集合与顺序）。
+`location` 与 `category_id` 是给 `events` 后加的列：`ALTER TABLE` 只能往表尾追加，所以 `currentSchema` 里也把它们放在最后，否则"全新库"和"迁移来的库"列顺序不同（有一条测试专门比对两者的列集合与顺序）。`categories.display` 不需要这样处理——格式 2 尚未发布，它是直接写进 1→2 那一步的建表语句里的。
 
 数据库格式版本记在 `meta` 表的 `format_version` 上（`v1.0.0` 之前用的是 `PRAGMA user_version`，现在那个值只是历史遗留，不再读取）。迁移在启动时自动进行，每一步一个事务、与版本号同时提交，因此中途中断只会重来而不会留下半迁移的库。重复启动幂等；若数据库来自更新的版本会拒绝启动。规则与改法见[版本与数据迁移](#版本与数据迁移)。
 
-SQLite 连接使用 WAL 日志模式、`busy_timeout=5000`，并为每个连接启用外键约束（`foreign_keys` 是连接级设置，因此写在 DSN 里以确保连接池中每个连接都生效）——这也是删除日程能级联清理提醒的前提。
+SQLite 连接使用 WAL 日志模式、`busy_timeout=5000`，并为每个连接启用外键约束（`foreign_keys` 是连接级设置，因此写在 DSN 里以确保连接池中每个连接都生效）——这是"永久移除日程"时能级联清理提醒的前提（"删除"只是改分类，不删行，所以不涉及级联）。
 
 ---
 
