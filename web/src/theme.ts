@@ -95,6 +95,29 @@ export function saveEditUnlocked(unlocked: boolean): void {
   writeFlag(EDIT_KEY, unlocked ? 'true' : 'false')
 }
 
+/* --------------------------------------------------- hidden canceled events */
+
+const HIDE_CANCELED_KEY = 'mycalendar.hideCanceled'
+
+/**
+ * Whether canceled events are left off the grid.
+ *
+ * Off by default: a canceled event is information about the plan, so it is
+ * shown (struck through) until the reader says they do not want to see it.
+ */
+export function readHideCanceled(): boolean {
+  try {
+    return window.localStorage.getItem(HIDE_CANCELED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+/** Persist the choice. */
+export function saveHideCanceled(hidden: boolean): void {
+  writeFlag(HIDE_CANCELED_KEY, hidden ? 'true' : 'false')
+}
+
 function writeFlag(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value)

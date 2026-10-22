@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, type RefObject } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import type { DateSelectArg, DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core'
 import type { DateClickArg } from '@fullcalendar/interaction'
@@ -67,6 +67,9 @@ interface Props {
    * available.
    */
   readOnly: boolean
+  /** Whether canceled events are filtered out of the grid. */
+  hideCanceled: boolean
+  onToggleHideCanceled: () => void
   calendarRef: RefObject<FullCalendar | null>
   onDatesSet: (arg: DatesSetArg) => void
   onEventClick: (arg: EventClickArg) => void
@@ -87,6 +90,8 @@ export function CalendarPane({
   events,
   categories,
   readOnly,
+  hideCanceled,
+  onToggleHideCanceled,
   calendarRef,
   onDatesSet,
   onEventClick,
@@ -109,12 +114,38 @@ export function CalendarPane({
    * its customButtons cannot express a disabled state, so the attribute is set
    * here after every render of the view.
    */
+  /**
+   * Paints the hide-canceled button for the current state.
+   *
+   * customButtons entries have a fixed text, so the label, the pressed state and
+   * the active styling are applied to the rendered button instead of being part
+   * of the options object.
+   */
+  const syncCanceledButton = useCallback(() => {
+    const button = document.querySelector<HTMLButtonElement>('.mc-calendar .fc-toggleCanceled-button')
+    if (!button) return
+    // The label comes from the option below, so FullCalendar owns that text;
+    // only the state attributes are set here. Writing textContent too would
+    // append a second label the next time the toolbar re-renders.
+    button.title = hideCanceled ? '显示已取消的日程（当前已隐藏）' : '隐藏已取消的日程'
+    button.setAttribute('aria-pressed', String(hideCanceled))
+    button.classList.toggle('is-active', hideCanceled)
+  }, [hideCanceled])
+
+  useEffect(() => {
+    syncCanceledButton()
+  }, [syncCanceledButton])
+
   const syncJumpButtons = useCallback(
     (arg: DatesSetArg) => {
       // The app renders exactly one calendar, and the toolbar lives inside this
       // container; FullCalendar's React wrapper does not expose its element.
       const root = document.querySelector('.mc-calendar')
       if (!root) return
+
+      // The toolbar is rebuilt when the view changes, so the toggle is repainted
+      // with it.
+      syncCanceledButton()
 
       const today = new Date()
       const isWeekView = arg.view.type === 'timeGridWeek'
@@ -132,7 +163,7 @@ export function CalendarPane({
         button.title = anchored ? '当前窗口已经从这里开始' : hint
       }
     },
-    [calendarRef],
+    [calendarRef, syncCanceledButton],
   )
 
   return (
@@ -161,7 +192,9 @@ export function CalendarPane({
       headerToolbar={{
         left: 'prev,next goToday,goWeek',
         center: 'title',
-        right: 'timeGridDay,fourDay,timeGridWeek',
+        // The hide-canceled toggle sits immediately left of the view switcher,
+        // where it belongs: it changes what the current view draws.
+        right: 'toggleCanceled timeGridDay,fourDay,timeGridWeek',
       }}
       // A custom button rather than the built-in one: FullCalendar disables its
       // own "today" whenever today is already inside the visible window, so the
@@ -183,6 +216,12 @@ export function CalendarPane({
         goWeek: {
           text: '本周',
           click: () => calendarRef.current?.getApi().today(),
+        },
+        // Its label and pressed state are synced after every render, since a
+        // custom button's text is fixed in the options object.
+        toggleCanceled: {
+          text: hideCanceled ? '已隐藏取消' : '隐藏已取消',
+          click: () => onToggleHideCanceled(),
         },
       }}
       // "周一 12" rather than the locale default "12日周一".

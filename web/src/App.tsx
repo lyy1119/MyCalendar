@@ -14,7 +14,7 @@ import {
 } from './api'
 import { draftForRange, draftFromEvent, type EventDraft } from './eventMapping'
 import { BROWSER_TZ } from './time'
-import { readEditUnlocked, saveEditUnlocked } from './theme'
+import { readEditUnlocked, readHideCanceled, saveEditUnlocked, saveHideCanceled } from './theme'
 import { CalendarPane } from './components/CalendarPane'
 import { EventDialog } from './components/EventDialog'
 import { Sidebar } from './components/Sidebar'
@@ -65,6 +65,12 @@ export default function App() {
    * all keep working, because the lock is about changing what is already there.
    */
   const [editUnlocked, setEditUnlocked] = useState<boolean>(() => readEditUnlocked())
+  /**
+   * Whether canceled events are left off the grid. Stored, so the choice
+   * survives a reload; filtering happens here rather than in the query, so
+   * toggling it is instant.
+   */
+  const [hideCanceled, setHideCanceled] = useState<boolean>(() => readHideCanceled())
   const [lockedNotice, setLockedNotice] = useState<string | null>(null)
 
   // The range currently on screen, so mutations can refresh exactly that.
@@ -161,6 +167,10 @@ export default function App() {
     saveEditUnlocked(editUnlocked)
     if (editUnlocked) setLockedNotice(null)
   }, [editUnlocked])
+
+  useEffect(() => {
+    saveHideCanceled(hideCanceled)
+  }, [hideCanceled])
 
   // The notice is only a nudge; it should not sit there forever.
   useEffect(() => {
@@ -267,10 +277,10 @@ export default function App() {
   // means the categories have not loaded, and then hiding everything would be
   // a lie about the data, so the events are shown as they came.
   const visibleEvents = useMemo(() => {
-    if (categories.length === 0) return events
+    if (categories.length === 0) return hideCanceled ? events.filter((e) => !e.canceled) : events
     const shown = new Set(categories.filter((c) => c.display).map((c) => c.id))
-    return events.filter((event) => shown.has(event.category_id))
-  }, [events, categories])
+    return events.filter((event) => shown.has(event.category_id) && (!hideCanceled || !event.canceled))
+  }, [events, categories, hideCanceled])
 
   const handleSaved = useCallback(
     (message: string) => {
@@ -320,6 +330,8 @@ export default function App() {
             events={visibleEvents}
             categories={categories}
             readOnly={!editUnlocked}
+            hideCanceled={hideCanceled}
+            onToggleHideCanceled={() => setHideCanceled((hidden) => !hidden)}
             calendarRef={calendarRef}
             onDatesSet={handleDatesSet}
             onEventClick={handleEventClick}

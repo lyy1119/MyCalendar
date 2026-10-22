@@ -679,6 +679,20 @@ body {
   margin-left: 6px;
 }
 
+/* Hiding canceled events is a reading preference, kept in localStorage rather
+   than on the server: it belongs to this browser, not to the calendar data.
+   The button sits left of the view switcher, apart from that group. */
+.mc-calendar .fc-toggleCanceled-button {
+  margin-right: 10px;
+  color: var(--mc-text-dim);
+}
+
+.mc-calendar .fc-toggleCanceled-button.is-active {
+  border-color: transparent;
+  background: var(--mc-accent);
+  color: var(--mc-accent-ink);
+}
+
 /* "今天" and "本周" are the same command with different names: a 4-day or day
    window is anchored on today, a week window is anchored on today's week. Only
    the one that matches the current view is shown, so the button never reads

@@ -571,6 +571,48 @@ try {
     JSON.stringify(canceledCheck),
   )
 
+  // The hide-canceled toggle sits left of the day/4-day/week switcher, and the
+  // preference lives in this browser only -- nothing about it reaches the API.
+  const canceledToggle = page.locator('.mc-calendar .fc-toggleCanceled-button')
+  const togglePlacement = await page.evaluate(() => {
+    const button = document.querySelector('.mc-calendar .fc-toggleCanceled-button')
+    const viewButton = document.querySelector('.mc-calendar .fc-timeGridDay-button')
+    if (!button || !viewButton) return null
+    const b = button.getBoundingClientRect()
+    const v = viewButton.getBoundingClientRect()
+    return {
+      leftOfViews: b.right <= v.left,
+      sameChunk: button.closest('.fc-toolbar-chunk') === viewButton.closest('.fc-toolbar-chunk'),
+    }
+  })
+  check(
+    'the hide-canceled toggle sits left of the view switcher',
+    togglePlacement?.leftOfViews === true && togglePlacement?.sameChunk === true,
+    JSON.stringify(togglePlacement),
+  )
+
+  await canceledToggle.click()
+  await page.waitForTimeout(500)
+  const hiddenTitles = await page.evaluate(() =>
+    [...document.querySelectorAll('.mc-calendar .fc-timegrid-event .fc-event-title')].map((e) => e.textContent),
+  )
+  check('hiding canceled events takes them off the grid', !hiddenTitles.some((t) => t.startsWith('提醒探针')), hiddenTitles.join('|'))
+  check(
+    'the toggle reports its state',
+    (await canceledToggle.getAttribute('aria-pressed')) === 'true',
+  )
+  check(
+    'the preference is kept in the browser, not on the server',
+    (await page.evaluate(() => window.localStorage.getItem('mycalendar.hideCanceled'))) === 'true',
+  )
+
+  await canceledToggle.click()
+  await page.waitForTimeout(500)
+  const shownAgain = await page.evaluate(() =>
+    [...document.querySelectorAll('.mc-calendar .fc-timegrid-event .fc-event-title')].map((e) => e.textContent),
+  )
+  check('showing them again brings the event back', shownAgain.some((t) => t.startsWith('提醒探针')), shownAgain.join('|'))
+
   // Delete moves it to the trash: off the grid, still a row.
   page.once('dialog', (d) => d.accept())
   await openEditor('新建的日程')
