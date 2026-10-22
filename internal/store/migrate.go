@@ -243,8 +243,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	// A format-1 database reaches display through the 1 -> 2 step above; this
-	// only matters for an intermediate format-2 file from the same unreleased
-	// release, and is a no-op otherwise.
+	// only matters for a format-2 file written by a pre-release build of 2.0.0,
+	// and is a no-op otherwise.
 	return s.ensureCategoryDisplay(ctx)
 }
 
@@ -330,11 +330,11 @@ func (s *Store) createCurrent(ctx context.Context) error {
 // created before the column existed.
 //
 // Format 2 has never been released, so the column was added by editing the
-// still-unreleased 1 -> 2 step rather than by adding a 2 -> 3 step. A database
-// written by an intermediate build of that same unreleased version therefore
-// reports format 2 without the column, and would fail on the first query; this
-// repair is what keeps those working. It is a no-op for a fresh or migrated
-// database.
+// 1 -> 2 step while that step was still unreleased (it shipped, column and all,
+// in v2.0.0) rather than by adding a 2 -> 3 step. A database written by one of
+// the pre-release builds of that period therefore reports format 2 without the
+// column, and would fail on the first query; this repair is what keeps those
+// working. It is a no-op for a fresh or migrated database.
 func (s *Store) ensureCategoryDisplay(ctx context.Context) error {
 	has, err := s.columnExists(ctx, "categories", "display")
 	if err != nil {
