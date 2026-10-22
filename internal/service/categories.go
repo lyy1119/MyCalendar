@@ -31,13 +31,15 @@ func (s *Service) GetCategory(ctx context.Context, id int64) (model.Category, er
 	return s.store.GetCategory(ctx, id)
 }
 
-// CreateCategory adds a category.
+// CreateCategory adds a category. A new category starts visible unless the
+// request says otherwise: creating something and not seeing it would be a
+// puzzle, not a preference.
 func (s *Service) CreateCategory(ctx context.Context, in model.CategoryInput) (model.Category, error) {
-	name, color, verr := s.categoryFields(in, "", "")
+	name, color, display, verr := s.categoryFields(in, "", "", true)
 	if verr != nil {
 		return model.Category{}, verr
 	}
-	return s.store.CreateCategory(ctx, name, color)
+	return s.store.CreateCategory(ctx, name, color, display)
 }
 
 // UpdateCategory renames or recolours a category. Both fields are optional, and
@@ -65,11 +67,11 @@ func (s *Service) UpdateCategory(ctx context.Context, id int64, in model.Categor
 				"the deleted category (-1) keeps its name; rename is refused because -1 is a state the API names. Its colour can still be changed")
 		}
 	}
-	name, color, verr := s.categoryFields(in, current.Name, current.Color)
+	name, color, display, verr := s.categoryFields(in, current.Name, current.Color, current.Display)
 	if verr != nil {
 		return model.Category{}, verr
 	}
-	return s.store.UpdateCategory(ctx, id, name, color)
+	return s.store.UpdateCategory(ctx, id, name, color, display)
 }
 
 // DeleteCategory removes a category and moves its events to uncategorized.
@@ -81,9 +83,14 @@ func (s *Service) DeleteCategory(ctx context.Context, id int64) error {
 	return err
 }
 
-// categoryFields resolves and validates a category's name and colour, falling
-// back to the current values for fields the request left alone.
-func (s *Service) categoryFields(in model.CategoryInput, currentName, currentColor string) (name, color string, verr *apperr.Validation) {
+// categoryFields resolves and validates a category's name, colour and
+// visibility, falling back to the current values for fields the request left
+// alone.
+func (s *Service) categoryFields(
+	in model.CategoryInput,
+	currentName, currentColor string,
+	currentDisplay bool,
+) (name, color string, display bool, verr *apperr.Validation) {
 	verr = &apperr.Validation{}
 
 	name = currentName
@@ -116,10 +123,20 @@ func (s *Service) categoryFields(in model.CategoryInput, currentName, currentCol
 		verr.Add("color", "is required and must not be empty")
 	}
 
-	if verr.Has() {
-		return "", "", verr
+	display = currentDisplay
+	if in.Display.Set {
+		if in.Display.Value == nil {
+			// A boolean has no null; refuse rather than guess which way it meant.
+			verr.Add("display", "must not be null")
+		} else {
+			display = *in.Display.Value
+		}
 	}
-	return name, color, nil
+
+	if verr.Has() {
+		return "", "", false, verr
+	}
+	return name, color, display, nil
 }
 
 // normalizeColor trims a colour and expands #abc to #aabbcc, lowercasing it so

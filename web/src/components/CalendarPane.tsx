@@ -108,6 +108,7 @@ export function CalendarPane({
         // A timeGrid with a four-day span; this is a plain view definition in
         // the free build, not a separate package.
         fourDay: { type: 'timeGrid', duration: { days: 4 }, buttonText: '4 天' },
+        timeGridDay: { buttonText: '日' },
         timeGridWeek: { buttonText: '周' },
       }}
       locale={zhCn}
@@ -117,16 +118,33 @@ export function CalendarPane({
       // 'local', uses the browser's own zone -- which is exactly the zone the
       // API is queried with, so the grid and the server still agree.
       firstDay={1}
-      headerToolbar={{ left: 'prev,next today', center: 'title', right: 'fourDay,timeGridWeek' }}
+      // "Back to today" is two buttons, and only one of them is shown: in a
+      // 4-day or single-day window the useful label is 今天, in the week view it
+      // is 本周. A custom button's text is fixed, so the pair is toggled by the
+      // data-view attribute on the container instead.
+      headerToolbar={{
+        left: 'prev,next today,thisWeek',
+        center: 'title',
+        right: 'timeGridDay,fourDay,timeGridWeek',
+      }}
       // A custom button rather than the built-in one: FullCalendar disables its
       // own "today" whenever today is already inside the visible window, so the
       // button sits there greyed out and unclickable most of the time -- which
       // reads as broken. The click-through does exactly what the built-in one
       // does, but it is always available, so "back to today" never refuses.
       customButtons={{
+        // Both jump to today; in the week view that is the week containing it,
+        // which is the same call. The anchor is today itself, so a 4-day window
+        // puts today in the leftmost column rather than centred or centred on
+        // some other day.
         today: {
           text: '今天',
-          hint: '回到今天',
+          hint: '把今天放到第一列',
+          click: () => calendarRef.current?.getApi().today(),
+        },
+        thisWeek: {
+          text: '本周',
+          hint: '回到本周',
           click: () => calendarRef.current?.getApi().today(),
         },
       }}

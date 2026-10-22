@@ -1,9 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import type { DateSelectArg, DatesSetArg, EventClickArg } from '@fullcalendar/core'
 import type { DateClickArg } from '@fullcalendar/interaction'
 
-import { ApiError, getEvent, listCategories, listEvents, type ApiCategory, type ApiEvent } from './api'
+import {
+  ApiError,
+  CATEGORY_DELETED,
+  getEvent,
+  listCategories,
+  listEvents,
+  updateCategory,
+  type ApiCategory,
+  type ApiEvent,
+} from './api'
 import { draftForRange, draftFromEvent, type EventDraft } from './eventMapping'
 import { BROWSER_TZ } from './time'
 import { readEditUnlocked, saveEditUnlocked } from './theme'
@@ -32,11 +41,21 @@ export default function App() {
   const calendarRef = useRef<FullCalendar>(null)
   const [events, setEvents] = useState<ApiEvent[]>([])
   const [activeDate, setActiveDate] = useState<Date>(() => new Date())
+  /** The FullCalendar view on screen ('fourDay', 'timeGridWeek', ...). */
+  const [viewType, setViewType] = useState('fourDay')
   const [dialogDraft, setDialogDraft] = useState<EventDraft | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [categories, setCategories] = useState<ApiCategory[]>([])
+  /**
+   * Whether the deleted category is switched on in the sidebar.
+   *
+   * Held in a ref as well as in the category list because the fetch callback
+   * needs it synchronously: the deleted events have to be asked for explicitly,
+   * or switching that category on would show an empty result.
+   */
+  const deletedDisplayedRef = useRef(false)
   const [route, setRoute] = useState<Route>(() => readRoute())
   /**
    * Whether the event dialog is showing a saved event as read-only, because the
@@ -67,7 +86,13 @@ export default function App() {
 
     setLoading(true)
     try {
-      const list = await listEvents({ from, to, tz: BROWSER_TZ, signal: controller.signal })
+      const list = await listEvents({
+        from,
+        to,
+        tz: BROWSER_TZ,
+        includeDeleted: deletedDisplayedRef.current,
+        signal: controller.signal,
+      })
       setEvents(list)
       setLoadError(null)
     } catch (err) {
@@ -87,7 +112,11 @@ export default function App() {
   // they are loaded once up front and again whenever the list changes.
   const loadCategories = useCallback(async () => {
     try {
-      setCategories(await listCategories())
+      const list = await listCategories()
+      setCategories(list)
+      // Kept in step here rather than in an effect so that a refresh issued
+      // straight after this call already sees the new value.
+      deletedDisplayedRef.current = list.some((c) => c.id === CATEGORY_DELETED && c.display)
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.fullMessage : String(err))
     }
@@ -103,6 +132,25 @@ export default function App() {
     void loadCategories()
     refresh()
   }, [loadCategories, refresh])
+
+  /**
+   * Switching a category on or off. The grid re-filters as soon as the stored
+   * value comes back, so the choice survives a reload and every client agrees.
+   */
+  const handleToggleCategory = useCallback(
+    async (id: number, display: boolean) => {
+      try {
+        await updateCategory(id, { display })
+        await loadCategories()
+        refresh()
+      } catch (err) {
+        setLoadError(err instanceof ApiError ? err.fullMessage : String(err))
+        // Put the checkbox back where the server still thinks it is.
+        await loadCategories()
+      }
+    },
+    [loadCategories, refresh],
+  )
 
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -147,6 +195,7 @@ export default function App() {
       const to = arg.endStr
       rangeRef.current = { from, to }
       setActiveDate(arg.view.currentStart)
+      setViewType(arg.view.type)
       void load(from, to)
     },
     [load],
@@ -230,6 +279,15 @@ export default function App() {
     [navigate],
   )
 
+  // Only the categories switched on in the sidebar are drawn. An empty list
+  // means the categories have not loaded, and then hiding everything would be
+  // a lie about the data, so the events are shown as they came.
+  const visibleEvents = useMemo(() => {
+    if (categories.length === 0) return events
+    const shown = new Set(categories.filter((c) => c.display).map((c) => c.id))
+    return events.filter((event) => shown.has(event.category_id))
+  }, [events, categories])
+
   const handleSaved = useCallback(
     (message: string) => {
       setDialogDraft(null)
@@ -250,6 +308,8 @@ export default function App() {
         onEditUnlockedChange={setEditUnlocked}
         onOpenCategories={() => navigate('categories')}
         categoriesActive={route === 'categories'}
+        categories={categories}
+        onToggleCategory={(id, display) => void handleToggleCategory(id, display)}
       />
 
       <main className="mc-main">
@@ -268,9 +328,10 @@ export default function App() {
           className="mc-calendar"
           data-loading={loading ? 'true' : 'false'}
           data-readonly={editUnlocked ? 'false' : 'true'}
+          data-view={viewType}
         >
           <CalendarPane
-            events={events}
+            events={visibleEvents}
             categories={categories}
             readOnly={!editUnlocked}
             calendarRef={calendarRef}

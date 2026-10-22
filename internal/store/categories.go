@@ -19,7 +19,7 @@ const (
 	CategoryUncategorized int64 = 0
 )
 
-const categoryColumns = `id, name, color`
+const categoryColumns = `id, name, color, display`
 
 // ListCategories returns every category, system rows first and then user rows
 // in id order.
@@ -34,7 +34,7 @@ func (s *Store) ListCategories(ctx context.Context) ([]model.Category, error) {
 	var out []model.Category
 	for rows.Next() {
 		var c model.Category
-		if err := rows.Scan(&c.ID, &c.Name, &c.Color); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Color, &c.Display); err != nil {
 			return nil, fmt.Errorf("scan category: %w", err)
 		}
 		out = append(out, c)
@@ -50,7 +50,7 @@ func (s *Store) GetCategory(ctx context.Context, id int64) (model.Category, erro
 	var c model.Category
 	err := s.db.QueryRowContext(ctx,
 		`SELECT `+categoryColumns+` FROM categories WHERE id = ?`, id).
-		Scan(&c.ID, &c.Name, &c.Color)
+		Scan(&c.ID, &c.Name, &c.Color, &c.Display)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Category{}, apperr.ErrNotFound
 	}
@@ -64,9 +64,9 @@ func (s *Store) GetCategory(ctx context.Context, id int64) (model.Category, erro
 //
 // The id is left to SQLite, which continues from 0 -- the highest fixed id --
 // so user categories number from 1.
-func (s *Store) CreateCategory(ctx context.Context, name, color string) (model.Category, error) {
+func (s *Store) CreateCategory(ctx context.Context, name, color string, display bool) (model.Category, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO categories (name, color) VALUES (?, ?)`, name, color)
+		`INSERT INTO categories (name, color, display) VALUES (?, ?, ?)`, name, color, display)
 	if err != nil {
 		return model.Category{}, fmt.Errorf("insert category: %w", err)
 	}
@@ -77,10 +77,10 @@ func (s *Store) CreateCategory(ctx context.Context, name, color string) (model.C
 	return s.GetCategory(ctx, id)
 }
 
-// UpdateCategory renames or recolours one category.
-func (s *Store) UpdateCategory(ctx context.Context, id int64, name, color string) (model.Category, error) {
+// UpdateCategory renames, recolours or shows/hides one category.
+func (s *Store) UpdateCategory(ctx context.Context, id int64, name, color string, display bool) (model.Category, error) {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE categories SET name = ?, color = ? WHERE id = ?`, name, color, id)
+		`UPDATE categories SET name = ?, color = ?, display = ? WHERE id = ?`, name, color, display, id)
 	if err != nil {
 		return model.Category{}, fmt.Errorf("update category: %w", err)
 	}

@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import dayGridPlugin from '@fullcalendar/daygrid'
 import interactionPlugin from '@fullcalendar/interaction'
 import type { DateClickArg } from '@fullcalendar/interaction'
 import zhCn from '@fullcalendar/core/locales/zh-cn'
 
+import { type ApiCategory } from '../api'
+import { readableTextOn } from '../eventMapping'
 import { BROWSER_TZ, isSameDay } from '../time'
 import {
   THEME_OPTIONS,
@@ -27,6 +29,9 @@ interface Props {
   onOpenCategories: () => void
   /** Whether the category page is the one on screen, so the gear can show it. */
   categoriesActive: boolean
+  /** Every category, with the stored answer to "show this one?". */
+  categories: ApiCategory[]
+  onToggleCategory: (id: number, display: boolean) => void
 }
 
 /**
@@ -71,6 +76,8 @@ export function Sidebar({
   onEditUnlockedChange,
   onOpenCategories,
   categoriesActive,
+  categories,
+  onToggleCategory,
 }: Props) {
   const miniRef = useRef<FullCalendar>(null)
   const [themeMode, setThemeMode, resolvedTheme] = useTheme()
@@ -129,6 +136,39 @@ export function Sidebar({
           dateClick={(arg: DateClickArg) => onPickDate(arg.date)}
           dayCellClassNames={(arg) => (isSameDay(arg.date, activeDate) ? ['mc-mini-selected'] : [])}
         />
+      </div>
+
+      {/* Which categories the grid draws. Like Google's calendar list: the
+          square is the checkbox and the swatch at once, so the colour and the
+          visibility of a category are one control. */}
+      <div className="mc-catlist">
+        <div className="mc-catlist__head">分类</div>
+        <ul className="mc-catlist__items">
+          {categories.map((category) => (
+            <li key={category.id}>
+              <label
+                className="mc-catlist__row"
+                style={
+                  {
+                    '--cat': category.color,
+                    '--cat-ink': readableTextOn(category.color),
+                  } as CSSProperties
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={category.display}
+                  aria-label={`显示「${category.name}」`}
+                  onChange={(e) => onToggleCategory(category.id, e.target.checked)}
+                />
+                <span className="mc-catlist__box" aria-hidden="true">
+                  {category.display ? '✓' : ''}
+                </span>
+                <span className="mc-catlist__name">{category.name}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
       </div>
 
       <dl className="mc-facts">

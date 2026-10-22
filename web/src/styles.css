@@ -199,6 +199,92 @@ body {
   padding: 4px 0;
 }
 
+/* ---------------------------------------------------------- sidebar list */
+
+/* The category list: the square is the checkbox and the swatch at once, in the
+   category's own colour -- checked is filled with a tick, unchecked is just the
+   outline. Same idea as Google's calendar list, where the colour and the
+   visibility of a calendar are one control. */
+.mc-catlist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--mc-border-soft);
+}
+
+.mc-catlist__head {
+  font-size: 12px;
+  color: var(--mc-text-dim);
+}
+
+.mc-catlist__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mc-catlist__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mc-catlist__row:hover {
+  background: var(--mc-surface-hover);
+}
+
+/* Visually hidden but still a real checkbox: keyboard and screen readers keep
+   working, and the focus ring is drawn on the square below. */
+.mc-catlist__row input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  margin: 0;
+}
+
+.mc-catlist__box {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--cat, var(--mc-border));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cat-ink, var(--mc-text));
+  font-size: 12px;
+  line-height: 1;
+}
+
+.mc-catlist__row input:checked + .mc-catlist__box {
+  background: var(--cat, var(--mc-accent));
+}
+
+.mc-catlist__row input:focus-visible + .mc-catlist__box {
+  outline: 2px solid var(--mc-accent);
+  outline-offset: 1px;
+}
+
+.mc-catlist__name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .mc-facts {
   margin: 0;
   padding-top: 12px;
@@ -591,6 +677,22 @@ body {
 .fc .fc-button-group > .fc-button {
   border-radius: 18px;
   margin-left: 6px;
+}
+
+/* "今天" and "本周" are the same command with different names: a 4-day or day
+   window is anchored on today, a week window is anchored on today's week. Only
+   the one that matches the current view is shown, so the button never reads
+   "本周" on a four-day grid. */
+.mc-calendar .fc-thisWeek-button {
+  display: none;
+}
+
+.mc-calendar[data-view='timeGridWeek'] .fc-thisWeek-button {
+  display: inline-block;
+}
+
+.mc-calendar[data-view='timeGridWeek'] .fc-today-button {
+  display: none;
 }
 
 /* FullCalendar's own active rule asks for --fc-button-text-color, which is the

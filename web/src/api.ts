@@ -10,6 +10,11 @@ export interface ApiCategory {
   id: number
   name: string
   color: string
+  /**
+   * Whether the sidebar shows this category. A stored preference: the events
+   * are still there and still returned, they are just filtered out of the grid.
+   */
+  display: boolean
 }
 
 /** The two ids the API gives a fixed meaning to. */
@@ -19,6 +24,7 @@ export const CATEGORY_UNCATEGORIZED = 0
 export interface CategoryInput {
   name?: string
   color?: string
+  display?: boolean
 }
 
 export interface ApiReminder {
@@ -151,6 +157,12 @@ export interface ListParams {
   /** Exclusive upper bound, same encodings as `from`. */
   to: string
   tz: string
+  /**
+   * Stop hiding events in the deleted category. The grid asks for them when the
+   * deleted category is switched on in the sidebar, so that toggling it shows
+   * what was thrown away rather than an empty result.
+   */
+  includeDeleted?: boolean
   signal?: AbortSignal
 }
 
@@ -161,6 +173,7 @@ export async function listEvents(params: ListParams): Promise<ApiEvent[]> {
     to: params.to,
     tz: params.tz,
   })
+  if (params.includeDeleted) query.set('include_deleted', 'true')
   const data = await request<{ events?: ApiEvent[] }>(`/api/v1/events?${query.toString()}`, {
     signal: params.signal,
   })

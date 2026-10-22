@@ -36,7 +36,7 @@
    **提醒（reminders）既可随日程整体写入，也可通过独立接口单独增删改查**。
 4. **时区处理**：存储与解释解耦，`tz` 参数按请求决定"这一天"的边界。
 5. **提醒（reminders）**：独立的增删改查接口，可随日程整体写入，但**不发送**任何通知。
-6. **分类（categories）**：独立的分类表与接口，日程只存 `category_id`，**一个日程只属于一个分类**。内置 `-1 删除`（灰色，名称固定，颜色可改）与 `0 默认`（蓝色，名称与颜色都可改）两个受保护分类（不可删除），其余 id 自增。改分类的名称或颜色，属于它的日程一起变——日程里存的是 id，不是颜色。分类的增删改查有**独立页面**（左侧齿轮进入，路径 `/categories`）。
+6. **分类（categories）**：独立的分类表与接口，日程只存 `category_id`，**一个日程只属于一个分类**。内置 `-1 删除`（灰色，名称固定，颜色可改）与 `0 默认`（蓝色，名称与颜色都可改）两个受保护分类（不可删除），其余 id 自增。改分类的名称或颜色，属于它的日程一起变——日程里存的是 id，不是颜色。每个分类还有一个 `display` 开关（存库），侧栏勾选它决定日历是否画这个分类；「删除」默认关闭。分类的增删改查有**独立页面**（左侧齿轮进入，路径 `/categories`）。
 7. **"删除"是标记，"移除"才是真删**：`DELETE /api/v1/events/{id}` 把日程的分类改成 `-1`（可恢复，仍可按 id 读到），`POST /api/v1/events/{id}/remove` 才会真正把行连同提醒一起毁掉。两者边界清晰，误点删除不会丢数据。
 8. **数据库自动迁移**：启动时检查格式版本并按主版本迁移，只支持逐个大版本升级，**详见[版本与数据迁移](#版本与数据迁移)**。
 9. **根节点 `/help`**：完整的 API 文档，JSON 或 Markdown 两种形态，供人类和 agent 阅读。
@@ -237,7 +237,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | GET | `/api/v1/categories` | 列出全部分类（含内置的 `-1`、`0`） |
 | POST | `/api/v1/categories` | 新建分类，id 自增且从 1 开始 |
 | GET | `/api/v1/categories/{id}` | 查询单个分类 |
-| PATCH | `/api/v1/categories/{id}` | 改分类的名称或颜色（`-1` 只允许改颜色） |
+| PATCH | `/api/v1/categories/{id}` | 改分类的名称、颜色或显示开关（`-1` 只允许改颜色与开关） |
 | DELETE | `/api/v1/categories/{id}` | 删除分类，其下的日程移回「默认」（0）；`-1`/`0` 返回 409 |
 
 日程字段包含 `title`、`notes`、`location`（地点）、起止时间、`is_all_day`、`is_task`、`is_completed`、`category_id` 与 `reminders`；约定：日历日期为 `YYYY-MM-DD` 字符串；所有区间**左闭右开** `[start, end)`；请求体中出现**未定义字段会直接报错**（避免拼写错误被静默忽略）；错误统一为 `{"error":{"code":...,"message":...,"details":[...]}}`。
@@ -265,8 +265,10 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | 能力 | 实现 |
 |---|---|
 | 4 天视图 | 默认视图。FullCalendar 的自定义 `timeGrid` 视图（`duration: { days: 4 }`），免费版即可定义，不需要额外插件包 |
+| 日视图 | `timeGridDay`，只显示一天。右上角的视图切换现在是 **日 / 4 天 / 周** |
 | 周视图（本周） | `timeGridWeek`；`今天` 按钮回到当前周 |
-| `今天` 按钮 | 用 `customButtons` 自己定义而不是 FullCalendar 内置的：内置按钮在"今天已在视野内"时会把自己置灰禁用，正是因为打开时就在今天，那个按钮几乎总是点不动。自定义的永远可点，行为一致 |
+| 回到今天 | 用 `customButtons` 自己定义而不是 FullCalendar 内置的：内置按钮在"今天已在视野内"时会把自己置灰禁用，正是因为打开时就在今天，那个按钮几乎总是点不动。4 天与日视图里它叫**今天**，把今天放到**第一列**（窗口锚定在今天，而不是让今天停在 prev/next 之后所在的位置）；周视图里同一个命令叫**本周**。两个按钮都注册着，按 `data-view` 只显示与当前视图匹配的那个 |
+| 侧栏分类列表 | 迷你月历下方列出全部分类，每行左边是一个**就是色块本身的复选框**：勾选=用该分类颜色填满并打勾（勾的颜色按分类色算黑白），取消=只剩该颜色的描边。勾/取消会 `PATCH` 分类的 `display` 并存库，日历随即按分类过滤。默认只显示「默认」，**「删除」默认不显示**；勾上「删除」时请求会带 `include_deleted=true`，于是真的能看到被删除的日程 |
 | 侧栏迷你月历 | 每天是**正方形**（`aspect-ratio: 1 / 1`）。之前行高由内容决定，格子是高大于宽的长方形，看起来不像月历 |
 | 全天日程置顶 | `allDaySlot`，全天日程渲染在**日期表头下方、时间网格上方**的独立行里，不随时间滚动 |
 | 可滚动时间网格 | 日期表头与全天行固定，其下是**一个**滚动区，左时间轴固定、各天列共用该滚动区，因此各列小时线始终对齐（与截图一致） |
@@ -430,7 +432,11 @@ start_at < :range_end AND COALESCE(end_at, start_at + 1) > :range_start
 
 删除一个普通分类时，其下日程在**同一个事务里**被移回 `0`，而不是级联删除。理由很直接：用户想删的是"这个分类"，不是"这个分类里的日程"。
 
+`display` 是**展示偏好，不是权限**：它记录"我想不想在日历上看到它"，存库只是为了刷新之后还记得、并且各端一致。隐藏一个分类不会移动它的事件，列表接口也照旧返回它们——过滤发生在渲染这一层。唯一的例外是内置的「删除」：事件本来就被服务端默认挡住，所以勾上它时前端会把 `include_deleted=true` 带上，否则勾了也什么都看不到。
+
 内置分类的默认值如果在早期构建里被写成过别的（`未分类` + 白色），启动时会把**仍然停在旧默认值**的行改成当前默认名与颜色；你改过的名字或颜色不会被覆盖。这属于种子数据的修正而不是表结构变化，所以没有单独的格式版本步骤，格式仍然是 2。
+
+`display` 列同理：格式 2 从未发布，所以它是**直接改 1→2 那一步**加上的，而不是新开 2→3 步骤。副作用是"用未发布版本的中间构建写过库"的库会声称格式 2 却没有这一列，启动时会检测并 `ALTER TABLE` 补上（并把「删除」置为 0），这条自愈有专门测试。
 
 真正把行毁掉只有一个入口：`POST /api/v1/events/{id}/remove`。它走 `DELETE FROM events`，提醒靠 `ON DELETE CASCADE` 跟着消失。**没有批量移除接口**——破坏性操作保持一条一条来。
 
@@ -825,7 +831,7 @@ internal/apperr/         错误分类（校验错误、参数错误、未找到�
 
 - `events`：`id, title, notes, start_at, end_at, is_all_day, event_date, is_task, is_completed, location, created_at, updated_at, category_id`
 - `reminders`：`id, event_id, remind_at, created_at`
-- `categories`：`id, name, color`（`color` 存 `#rrggbb` 文本；`-1` 删除、`0` 默认，其余自增）
+- `categories`：`id, name, color, display`（`color` 存 `#rrggbb` 文本；`display` 为 1/0，表示侧栏是否显示；`-1` 删除、`0` 默认，其余自增）
 
 索引：`events(start_at)`、`events(end_at)`、`events(event_date)`、`events(is_all_day, is_task, is_completed)`、`events(category_id)`、`reminders(event_id)`、`reminders(remind_at)`。
 

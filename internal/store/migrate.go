@@ -87,9 +87,10 @@ var migrations = []step{
 // paths cannot describe the table differently.
 const categoriesSchema = `
 CREATE TABLE IF NOT EXISTS categories (
-    id    INTEGER PRIMARY KEY,
-    name  TEXT NOT NULL,
-    color TEXT NOT NULL
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL,
+    color   TEXT NOT NULL,
+    display INTEGER NOT NULL DEFAULT 1
 );
 `
 
@@ -110,8 +111,10 @@ const (
 // is what the delete endpoint sets, and 0 is the fallback for everything else.
 // Their ids are fixed, so later categories auto-increment from 1.
 const seedCategories = `
-INSERT OR IGNORE INTO categories (id, name, color) VALUES (-1, '` + deletedCategoryName + `', '` + deletedCategoryColor + `');
-INSERT OR IGNORE INTO categories (id, name, color) VALUES (0, '` + uncategorizedCategoryName + `', '` + uncategorizedCategoryColor + `');
+INSERT OR IGNORE INTO categories (id, name, color, display)
+ VALUES (-1, '` + deletedCategoryName + `', '` + deletedCategoryColor + `', 0);
+INSERT OR IGNORE INTO categories (id, name, color, display)
+ VALUES (0, '` + uncategorizedCategoryName + `', '` + uncategorizedCategoryColor + `', 1);
 `
 
 // migrateBuiltInDefaults brings the built-in rows written by earlier builds up
@@ -139,9 +142,12 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE TABLE IF NOT EXISTS categories (
-    id    INTEGER PRIMARY KEY,
-    name  TEXT NOT NULL,
-    color TEXT NOT NULL
+    id      INTEGER PRIMARY KEY,
+    name    TEXT NOT NULL,
+    color   TEXT NOT NULL,
+    -- Whether the sidebar shows this category. A presentation choice, stored so
+    -- it survives a reload; the deleted row (-1) starts hidden.
+    display INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -210,6 +216,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// interrupted upgrade, a hand-edited file) would leave every event
 		// pointing at an id no lookup can resolve, so repair it. INSERT OR
 		// IGNORE keeps any renaming or recolouring the user did to those rows.
+		if err := s.ensureCategoryDisplay(ctx); err != nil {
+			return err
+		}
 		return s.ensureSeedCategories(ctx)
 	}
 	if *stamp > FormatVersion {
@@ -233,7 +242,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	// A format-1 database reaches display through the 1 -> 2 step above; this
+	// only matters for an intermediate format-2 file from the same unreleased
+	// release, and is a no-op otherwise.
+	return s.ensureCategoryDisplay(ctx)
 }
 
 // planSteps chooses the steps to run, refusing to jump more than one major
@@ -312,6 +324,56 @@ func (s *Store) createCurrent(ctx context.Context) error {
 		return fmt.Errorf("commit schema creation: %w", err)
 	}
 	return nil
+}
+
+// ensureCategoryDisplay adds the display column to a categories table that was
+// created before the column existed.
+//
+// Format 2 has never been released, so the column was added by editing the
+// still-unreleased 1 -> 2 step rather than by adding a 2 -> 3 step. A database
+// written by an intermediate build of that same unreleased version therefore
+// reports format 2 without the column, and would fail on the first query; this
+// repair is what keeps those working. It is a no-op for a fresh or migrated
+// database.
+func (s *Store) ensureCategoryDisplay(ctx context.Context) error {
+	has, err := s.columnExists(ctx, "categories", "display")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`ALTER TABLE categories ADD COLUMN display INTEGER NOT NULL DEFAULT 1`); err != nil {
+		return fmt.Errorf("add categories.display: %w", err)
+	}
+	// The whole point of the column on day one: the deleted pile stays hidden.
+	if _, err := s.db.ExecContext(ctx, `UPDATE categories SET display = 0 WHERE id = -1`); err != nil {
+		return fmt.Errorf("hide the deleted category: %w", err)
+	}
+	return nil
+}
+
+// columnExists reports whether a table already has a column.
+func (s *Store) columnExists(ctx context.Context, table, column string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+	return false, nil
 }
 
 // ensureSeedCategories inserts the built-in categories if they are missing and

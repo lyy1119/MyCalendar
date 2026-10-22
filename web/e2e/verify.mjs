@@ -72,7 +72,16 @@ try {
   // DELETE only marks an event, so the cleanup uses /remove; otherwise every
   // run would leave a deleted row behind and the trash would grow forever.
   for (const e of stale) await api(`/api/v1/events/${e.id}/remove`, { method: 'POST' })
-  check('clean slate', true, `removed ${stale.length} pre-existing event(s)`)
+  // User categories go too, so a second run on the same database sees the same
+  // sidebar as the first: the built-ins are -1 and 0, everything else is ours.
+  const existingCategories = await api('/api/v1/categories')
+  const extraCategories = (existingCategories.body?.categories ?? []).filter((c) => c.id >= 1)
+  for (const c of extraCategories) await api(`/api/v1/categories/${c.id}`, { method: 'DELETE' })
+  check(
+    'clean slate',
+    true,
+    `removed ${stale.length} event(s) and ${extraCategories.length} category/ies`,
+  )
 
   // -------------------------------------------------------------- seed data
 
@@ -293,8 +302,48 @@ try {
   check('week view shows exactly 7 day columns', week.headers === 7, `headers=${week.headers}`)
   check('week view still scrolls as one region', week.scrollable)
 
+  // The jump-to-today button is called 本周 in the week view: the same command,
+  // named for what it does there.
+  check(
+    'the week view calls it 本周',
+    (await page.locator('.mc-calendar .fc-thisWeek-button').isVisible()) &&
+      !(await page.locator('.mc-calendar .fc-today-button').isVisible()),
+  )
+
+  // ------------------------------------------------ single day view
+  await page.locator('.mc-calendar .fc-timeGridDay-button').click()
+  await page.waitForTimeout(700)
+  const dayView = await page.evaluate(() => ({
+    headers: [...document.querySelectorAll('.mc-calendar .fc-col-header-cell')].map((e) => e.textContent.trim()),
+    view: document.querySelector('.mc-calendar')?.getAttribute('data-view'),
+  }))
+  check('the day view shows exactly one column', dayView.headers.length === 1, `headers=${dayView.headers.join('|')}`)
+  check('the day view is a real view type', dayView.view === 'timeGridDay', `view=${dayView.view}`)
+  check(
+    'the day view calls the jump button 今天',
+    (await page.locator('.mc-calendar .fc-today-button').isVisible()) &&
+      !(await page.locator('.mc-calendar .fc-thisWeek-button').isVisible()),
+  )
+
   await page.locator('.mc-calendar .fc-fourDay-button').click()
   await page.waitForTimeout(600)
+
+  // 今天 in the 4-day view anchors today to the *leftmost* column rather than
+  // leaving it wherever a page of prev/next happened to land.
+  await page.locator('.mc-calendar .fc-next-button').click()
+  await page.waitForTimeout(500)
+  await page.locator('.mc-calendar .fc-today-button').click()
+  await page.waitForTimeout(700)
+  const anchored = await page.evaluate(() => ({
+    first: document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date'),
+    columns: document.querySelectorAll('.mc-calendar .fc-col-header-cell').length,
+  }))
+  const todayIso = new Date().toISOString().slice(0, 10)
+  check(
+    '今天 puts today in the first column',
+    anchored.first === todayIso && anchored.columns === 4,
+    `first=${anchored.first} today=${todayIso} columns=${anchored.columns}`,
+  )
 
   // ---- a wall clock typed into the dialog must be the wall clock drawn
   {
@@ -840,6 +889,89 @@ try {
     )
   }
   await setTheme('自动')
+
+  // ----------------------------------------------------- sidebar category list
+  // Which categories the grid draws is a stored preference, so the check is
+  // that toggling one changes the grid *and* survives a reload.
+  const sidebarRow = (name) => page.locator('.mc-sidebar .mc-catlist__row', { hasText: name })
+  const gridTitles = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('.mc-calendar .fc-timegrid-event .fc-event-title')].map((e) => e.textContent),
+    )
+
+  const rowCount = await page.locator('.mc-sidebar .mc-catlist__row').count()
+  check('the sidebar lists every category', rowCount >= 2, `rows=${rowCount}`)
+  check(
+    'the deleted category starts hidden',
+    (await sidebarRow('删除').locator('input').isChecked()) === false,
+  )
+  check(
+    'ordinary categories start visible',
+    (await sidebarRow('默认').locator('input').isChecked()) === true,
+  )
+
+  const beforeHide = await gridTitles()
+  check('the pale category is on the grid to begin with', beforeHide.some((t) => t.startsWith('浅色块')))
+
+  await sidebarRow('浅色分类').click()
+  await page.waitForTimeout(700)
+  const afterHide = await gridTitles()
+  check('unticking a category removes its events', !afterHide.some((t) => t.startsWith('浅色块')), afterHide.join('|'))
+  check(
+    'and the others stay',
+    afterHide.some((t) => t.startsWith('定时日程')),
+    afterHide.join('|'),
+  )
+
+  // The choice is stored, not local state: reload keeps it.
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForSelector('.mc-sidebar .mc-catlist__row')
+  await page.waitForTimeout(600)
+  check(
+    'the hidden category is still hidden after a reload',
+    (await sidebarRow('浅色分类').locator('input').isChecked()) === false,
+  )
+  check(
+    'and its events are still gone',
+    !(await gridTitles()).some((t) => t.startsWith('浅色块')),
+  )
+
+  await sidebarRow('浅色分类').click()
+  await page.waitForTimeout(700)
+  check(
+    'ticking it again brings the events back',
+    (await gridTitles()).some((t) => t.startsWith('浅色块')),
+  )
+
+  // Switching the deleted category on asks the API for deleted events (they are
+  // hidden server-side by default), so the toggle shows something rather than
+  // an empty result. The event is made here so this does not depend on what the
+  // earlier checks did with the trash.
+  const trash = await post({
+    title: '删除探针',
+    start_at: hourIn(today, 1, 16),
+    end_at: hourIn(today, 1, 17),
+  })
+  await api(`/api/v1/events/${trash.body?.id}`, { method: 'DELETE' })
+  check(
+    'the deleted event is gone while its category is off',
+    !(await gridTitles()).some((t) => t.startsWith('删除探针')),
+  )
+  await sidebarRow('删除').click()
+  await page.waitForTimeout(800)
+  const withDeleted = await gridTitles()
+  check(
+    'enabling the deleted category shows what was deleted',
+    withDeleted.some((t) => t.startsWith('删除探针')),
+    withDeleted.join('|'),
+  )
+  await sidebarRow('删除').click()
+  await page.waitForTimeout(800)
+  check(
+    'switching it off hides them again',
+    !(await gridTitles()).some((t) => t.startsWith('删除探针')),
+  )
+  await api(`/api/v1/events/${trash.body?.id}/remove`, { method: 'POST' })
 
   // ------------------------------------------------------- category page
   // The gear opens a page of its own (a real path, so a refresh stays there),

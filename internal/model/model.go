@@ -47,17 +47,24 @@ func (o Optional[T]) MarshalJSON() ([]byte, error) {
 
 // Category groups events and gives them a colour. Two ids are fixed: -1 marks
 // an event as deleted and 0 is the uncategorized fallback.
+//
+// Display is the user's answer to "do I want to see this one": it is stored so
+// the choice survives a reload and is shared by every client, but it says
+// nothing about access -- a hidden category still holds its events, and a query
+// still returns them. It is presentation.
 type Category struct {
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
-	Color string `json:"color"`
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Color   string `json:"color"`
+	Display bool   `json:"display"`
 }
 
 // CategoryInput is the body of the create and update endpoints. Every field is
 // optional on update.
 type CategoryInput struct {
-	Name  Optional[string] `json:"name"`
-	Color Optional[string] `json:"color"`
+	Name    Optional[string] `json:"name"`
+	Color   Optional[string] `json:"color"`
+	Display Optional[bool]   `json:"display"`
 }
 
 // Event is a stored calendar entry.

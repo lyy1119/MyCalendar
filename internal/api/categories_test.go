@@ -50,6 +50,11 @@ func TestSeedCategories(t *testing.T) {
 	if deleted["color"] != "#9aa0a6" {
 		t.Errorf("category -1 colour = %v, want #9aa0a6", deleted["color"])
 	}
+	// The deleted pile starts hidden: it is a fallback for what was thrown away,
+	// not a place to look at.
+	if deleted["display"] != false {
+		t.Errorf("category -1 display = %v, want false", deleted["display"])
+	}
 
 	uncategorized, ok := byID[0]
 	if !ok {
@@ -57,6 +62,9 @@ func TestSeedCategories(t *testing.T) {
 	}
 	if uncategorized["name"] != "默认" || uncategorized["color"] != "#1a73e8" {
 		t.Errorf("category 0 = %v, want 默认/#1a73e8", uncategorized)
+	}
+	if uncategorized["display"] != true {
+		t.Errorf("category 0 display = %v, want true", uncategorized["display"])
 	}
 }
 
@@ -143,6 +151,56 @@ func TestCategoryCRUD(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Visibility is a stored preference: the sidebar toggles it, and toggling it
+// says nothing about the events behind it.
+func TestCategoryDisplay(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	created := h.decode(mustDo(t, h, http.MethodPost, "/api/v1/categories",
+		`{"name":"工作","color":"#4a90e2"}`))
+	if created["display"] != true {
+		t.Errorf("a new category is visible by default, got %v", created["display"])
+	}
+	id := int(created["id"].(float64))
+	event := h.create(fmt.Sprintf(`{"title":"带分类","start_at":"2026-10-20T10:00","category_id":%d}`, id))
+	eventID := eventID(t, event)
+
+	// Hiding it is a PATCH, and the event is untouched.
+	status, _, raw := h.do(http.MethodPatch, fmt.Sprintf("/api/v1/categories/%d", id), `{"display":false}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH display status = %d, want 200; body: %s", status, raw)
+	}
+	if got := h.decode(raw); got["display"] != false || got["name"] != "工作" {
+		t.Errorf("after hiding: %v, want display=false with the name kept", got)
+	}
+	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/events/%d", eventID), "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("hiding a category must not affect its events, status = %d", status)
+	}
+	if got := h.decode(raw); got["category_id"].(float64) != float64(id) {
+		t.Errorf("event category = %v, want %d", got["category_id"], id)
+	}
+
+	// A boolean has no null, so saying null is an error rather than a guess.
+	status, _, raw = h.do(http.MethodPatch, fmt.Sprintf("/api/v1/categories/%d", id), `{"display":null}`, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("PATCH display null status = %d, want 400; body: %s", status, raw)
+	}
+	if fields := errorFields(t, h.decode(raw)); len(fields) == 0 || fields[0] != "display" {
+		t.Errorf("details = %v, want display", fields)
+	}
+
+	// Showing the deleted pile is allowed too: the column is a preference, and
+	// the list endpoint decides separately what a query returns.
+	status, _, raw = h.do(http.MethodPatch, "/api/v1/categories/-1", `{"display":true}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("PATCH -1 display status = %d, want 200; body: %s", status, raw)
+	}
+	if got := h.decode(raw); got["display"] != true {
+		t.Errorf("category -1 display = %v, want true", got["display"])
+	}
 }
 
 // -1 is a state the API names rather than a grouping the user chose, so its

@@ -276,6 +276,66 @@ func TestBuiltInCategoriesAreRestored(t *testing.T) {
 	}
 }
 
+// Format 2 is unreleased, so the display column was added by editing the 1 -> 2
+// step rather than by adding a 2 -> 3 one. A database written by an
+// intermediate build of that same unreleased version reports format 2 without
+// the column; startup has to add it, or every category query fails.
+func TestUnreleasedFormat2GainsDisplayColumn(t *testing.T) {
+	ctx := context.Background()
+	path := makeV1Database(t, true)
+
+	// Simulate the intermediate build: migrate, then strip the column the way
+	// that build's schema would have looked.
+	st, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	st.Close()
+
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	for _, stmt := range []string{
+		// The same table without the column, keeping the primary key so the seed
+		// rows stay identifiable.
+		`CREATE TABLE categories_old (
+		     id INTEGER PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL)`,
+		`INSERT INTO categories_old (id, name, color) SELECT id, name, color FROM categories`,
+		`DROP TABLE categories`,
+		`ALTER TABLE categories_old RENAME TO categories`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	db.Close()
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open after downgrade: %v", err)
+	}
+	defer reopened.Close()
+
+	categories, err := reopened.ListCategories(ctx)
+	if err != nil {
+		t.Fatalf("ListCategories: %v", err)
+	}
+	if len(categories) != 2 {
+		t.Fatalf("categories = %d, want the two built-ins", len(categories))
+	}
+	byID := map[int64]model.Category{}
+	for _, c := range categories {
+		byID[c.ID] = c
+	}
+	if !byID[CategoryUncategorized].Display {
+		t.Errorf("category 0 display = false, want the default true")
+	}
+	if byID[CategoryDeleted].Display {
+		t.Errorf("category -1 display = true, want it hidden")
+	}
+}
+
 // A database written by an earlier build of this release still has the old
 // built-in defaults (未分类 in white), so startup moves them to the current
 // ones -- but only while they are untouched.
@@ -315,7 +375,7 @@ func TestBuiltInDefaultsAreNotImposedOnAChosenColour(t *testing.T) {
 	st := newTestStore(t)
 	path := st.Path()
 
-	if _, err := st.UpdateCategory(ctx, CategoryUncategorized, "默认", "#22aa66"); err != nil {
+	if _, err := st.UpdateCategory(ctx, CategoryUncategorized, "默认", "#22aa66", true); err != nil {
 		t.Fatalf("UpdateCategory: %v", err)
 	}
 	st.Close()
@@ -341,7 +401,7 @@ func TestRestoringBuiltInCategoriesKeepsRenames(t *testing.T) {
 	st := newTestStore(t)
 	path := st.Path()
 
-	renamed, err := st.UpdateCategory(ctx, CategoryDeleted, "已删除", "#9aa0a6")
+	renamed, err := st.UpdateCategory(ctx, CategoryDeleted, "已删除", "#9aa0a6", false)
 	if err != nil {
 		t.Fatalf("UpdateCategory: %v", err)
 	}

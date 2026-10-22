@@ -184,6 +184,11 @@ export function CategoriesPage({ categories, onBack, onChanged }: Props) {
                     内置 · 默认
                   </span>
                 )}
+                {!category.display && (
+                  <span className="mc-cats__tag" title="在左侧「分类」里勾选即可显示">
+                    已隐藏
+                  </span>
+                )}
                 {!PROTECTED.has(category.id) && (
                   <button
                     type="button"
