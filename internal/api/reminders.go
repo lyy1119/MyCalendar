@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,14 @@ func parseReminderFilter(r *http.Request, loc *time.Location) (store.ReminderFil
 		summary = map[string]any{}
 	)
 
+	if raw := strings.TrimSpace(q.Get("include_deleted")); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			return filter, nil, apperr.Param("include_deleted", "must be true or false")
+		}
+		filter.IncludeDeleted = v
+		summary["include_deleted"] = v
+	}
 	if raw := strings.TrimSpace(q.Get("event_id")); raw != "" {
 		id, err := parsePositiveInt("event_id", raw)
 		if err != nil {

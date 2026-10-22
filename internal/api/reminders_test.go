@@ -290,8 +290,8 @@ func TestReminderDelete(t *testing.T) {
 	}
 }
 
-// Deleting only marks an event, so its reminders stay; removing it for good is
-// what cascades.
+// Deleting only marks an event, so its reminders stay in the table; removing it
+// for good is what cascades.
 func TestReminderCascadeOnEventRemove(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 	eventID := newEventForReminders(t, h, "会议")
@@ -299,7 +299,16 @@ func TestReminderCascadeOnEventRemove(t *testing.T) {
 
 	path := fmt.Sprintf("/api/v1/events/%d", eventID)
 	h.do(http.MethodDelete, path, "", nil)
+
+	// Still there, but no longer listed: a deleted event must not notify.
 	status, _, raw := h.do(http.MethodGet, "/api/v1/reminders", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if got := h.decode(raw); got["count"].(float64) != 0 {
+		t.Errorf("reminders of a deleted event are still listed: %v", got["count"])
+	}
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_deleted=true", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
@@ -309,12 +318,73 @@ func TestReminderCascadeOnEventRemove(t *testing.T) {
 
 	h.do(http.MethodPost, path+"/remove", "", nil)
 
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders", "", nil)
+	for _, query := range []string{"", "?include_deleted=true"} {
+		status, _, raw = h.do(http.MethodGet, "/api/v1/reminders"+query, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("status = %d", status)
+		}
+		if got := h.decode(raw); got["count"].(float64) != 0 {
+			t.Errorf("reminders survived the event (%q): %v", query, got["count"])
+		}
+	}
+}
+
+// The reminder of a deleted event is hidden from the collection but still
+// readable by id, the same way the event itself behaves.
+func TestReminderListHidesDeletedEvents(t *testing.T) {
+	h := newHarness(t, "Asia/Shanghai")
+
+	keep := newEventForReminders(t, h, "保留")
+	addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460700}`, keep))
+
+	drop := newEventForReminders(t, h, "删除")
+	gone := reminderID(t, addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460800}`, drop)))
+
+	h.do(http.MethodDelete, fmt.Sprintf("/api/v1/events/%d", drop), "", nil)
+
+	status, _, raw := h.do(http.MethodGet, "/api/v1/reminders", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	got := h.decode(raw)
+	if got["count"].(float64) != 1 {
+		t.Fatalf("count = %v, want only the reminder of the event that is still alive", got["count"])
+	}
+	first := got["reminders"].([]any)[0].(map[string]any)
+	if int(first["event_id"].(float64)) != keep {
+		t.Errorf("listed reminder belongs to event %v, want %d", first["event_id"], keep)
+	}
+
+	// Naming the event explicitly does not bypass the hiding: the filter says
+	// which event, not that deleted ones are wanted.
+	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/reminders?event_id=%d", drop), "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
 	if got := h.decode(raw); got["count"].(float64) != 0 {
-		t.Errorf("reminders survived the event: %v", got["count"])
+		t.Errorf("event_id filter listed a deleted event's reminders: %v", got["count"])
+	}
+
+	// include_deleted asks for them, and says so in the echoed filters.
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_deleted=true", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	got = h.decode(raw)
+	if got["count"].(float64) != 2 {
+		t.Errorf("include_deleted count = %v, want both reminders", got["count"])
+	}
+
+	// The reminder itself is still addressable, like its event.
+	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/reminders/%d", gone), "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("GET reminder of a deleted event status = %d, want 200", status)
+	}
+
+	// A bad value for the flag is a parameter error, not a silent false.
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_deleted=maybe", "", nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", status, raw)
 	}
 }
 

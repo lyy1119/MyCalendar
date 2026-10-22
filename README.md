@@ -240,7 +240,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | PATCH | `/api/v1/events/{id}` | 部分更新 |
 | DELETE | `/api/v1/events/{id}` | "删除"：把日程标记为删除（分类改 `-1`），可恢复 |
 | POST | `/api/v1/events/{id}/remove` | 真正移除日程（行与提醒一起删，不可恢复） |
-| GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它） |
+| GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它）。**已删除日程的提醒默认不返回**，要查用 `include_deleted=true` |
 | POST | `/api/v1/reminders` | 给已存在的日程添加提醒 |
 | GET | `/api/v1/reminders/{id}` | 查询单个提醒 |
 | PATCH | `/api/v1/reminders/{id}` | 修改提醒时间 |
@@ -264,6 +264,8 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 响应里除了 `start_at`/`end_at`（Unix 秒）之外，还给出 `start_at_local`/`end_at_local`（同一瞬时在本次请求 `tz` 下渲染的 RFC3339）。`from`/`to` 查询参数接受同样的三种写法。
 
 列表接口的过滤参数：`category_id`（只看某个分类；**显式指定优先于默认隐藏**，所以 `category_id=-1` 能列出已删除的日程）、`include_deleted=true`（把已删除的日程一起返回）、`is_task`、`is_completed`、`q`（标题子串）、`limit`/`offset`。`display` **不参与服务端过滤**——它是给人看的偏好，前端据此隐藏某些分类。
+
+提醒列表和日程列表遵循同一条规则：**分类为 `-1`（已删除）的日程，其提醒默认不出现在 `/api/v1/reminders` 里**——删掉的日程不该再提醒任何人，而轮询这个接口的客户端正是在找"接下来要做什么"。需要时用 `include_deleted=true` 取回；`/api/v1/reminders/{id}` 仍按 id 返回单条，与"已删除的日程仍可按 id 读到"保持一致。
 
 路由分工：`/` 归前端（任何非 `/api` 开头的路径都会返回前端外壳，这样前端路由刷新不会 404），`/api/*` 归机器，未知的 `/api/*` 路径仍然返回 JSON 404 而不会被前端吞掉。JSON 版的接口索引位于 `/api`（原先在 `/`，前端接管根路径后迁移）。
 

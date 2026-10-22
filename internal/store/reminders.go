@@ -15,6 +15,10 @@ import (
 type ReminderFilter struct {
 	// EventID keeps only the reminders of one event.
 	EventID *int64
+	// IncludeDeleted also returns reminders whose event has been deleted
+	// (category -1). Off by default: a deleted event must not notify anybody,
+	// and a client polling this endpoint is looking for something to act on.
+	IncludeDeleted bool
 	// From and To bound remind_at, half-open.
 	From *int64
 	To   *int64
@@ -62,23 +66,31 @@ func (s *Store) ListReminders(ctx context.Context, f ReminderFilter) ([]model.Re
 	)
 
 	if f.EventID != nil {
-		conds = append(conds, `event_id = ?`)
+		conds = append(conds, `r.event_id = ?`)
 		args = append(args, *f.EventID)
 	}
 	if f.From != nil {
-		conds = append(conds, `remind_at >= ?`)
+		conds = append(conds, `r.remind_at >= ?`)
 		args = append(args, *f.From)
 	}
 	if f.To != nil {
-		conds = append(conds, `remind_at < ?`)
+		conds = append(conds, `r.remind_at < ?`)
 		args = append(args, *f.To)
 	}
 
-	query := `SELECT ` + reminderColumns + ` FROM reminders`
+	// The join is only needed to ask about the owning event, so it is always
+	// present and every column is qualified; the reminder's own columns are
+	// unambiguous, but event_id would not be.
+	query := `SELECT ` + reminderColumnsQualified + `
+	          FROM reminders r JOIN events e ON e.id = r.event_id`
+	if !f.IncludeDeleted {
+		conds = append(conds, `e.category_id <> ?`)
+		args = append(args, CategoryDeleted)
+	}
 	if len(conds) > 0 {
 		query += ` WHERE ` + strings.Join(conds, " AND ")
 	}
-	query += ` ORDER BY remind_at ASC, id ASC`
+	query += ` ORDER BY r.remind_at ASC, r.id ASC`
 
 	if f.Limit > 0 {
 		query += ` LIMIT ? OFFSET ?`

@@ -14,6 +14,10 @@ import (
 const (
 	eventColumns    = `id, title, notes, location, start_at, end_at, is_all_day, event_date, is_task, is_completed, created_at, updated_at, category_id`
 	reminderColumns = `id, event_id, remind_at, created_at`
+	// Same columns, qualified for a query that joins events.
+	// Only ListReminders needs this -- it is the one place that has to ask about
+	// the owning event, and there event_id would otherwise be ambiguous.
+	reminderColumnsQualified = `r.id, r.event_id, r.remind_at, r.created_at`
 
 	// reminderChunk bounds the size of an IN (...) clause; SQLite limits the
 	// number of bound parameters per statement.
