@@ -80,6 +80,21 @@ export function isSameDay(a: Date, b: Date): boolean {
   )
 }
 
+/**
+ * The Monday of the week containing `date`, at local midnight.
+ *
+ * The calendar starts weeks on Monday (firstDay = 1), so "this week" in the UI
+ * means this Monday-to-Sunday block, not whatever the browser's locale
+ * considers the first day.
+ */
+export function startOfWeek(date: Date): Date {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  // getDay(): 0 is Sunday, so Sunday has to go back six days rather than one.
+  const offset = (start.getDay() + 6) % 7
+  start.setDate(start.getDate() - offset)
+  return start
+}
+
 /** HH:mm for display. */
 export function formatTime(date: Date): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`

@@ -683,16 +683,24 @@ body {
    window is anchored on today, a week window is anchored on today's week. Only
    the one that matches the current view is shown, so the button never reads
    "本周" on a four-day grid. */
-.mc-calendar .fc-thisWeek-button {
+.mc-calendar .fc-goWeek-button {
   display: none;
 }
 
-.mc-calendar[data-view='timeGridWeek'] .fc-thisWeek-button {
+.mc-calendar[data-view='timeGridWeek'] .fc-goWeek-button {
   display: inline-block;
 }
 
-.mc-calendar[data-view='timeGridWeek'] .fc-today-button {
+.mc-calendar[data-view='timeGridWeek'] .fc-goToday-button {
   display: none;
+}
+
+/* The jump button is greyed out only when it would do nothing: the window
+   already starts where today is. */
+.mc-calendar .fc-goToday-button:disabled,
+.mc-calendar .fc-goWeek-button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* FullCalendar's own active rule asks for --fc-button-text-color, which is the

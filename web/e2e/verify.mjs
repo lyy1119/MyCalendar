@@ -306,8 +306,24 @@ try {
   // named for what it does there.
   check(
     'the week view calls it 本周',
-    (await page.locator('.mc-calendar .fc-thisWeek-button').isVisible()) &&
-      !(await page.locator('.mc-calendar .fc-today-button').isVisible()),
+    (await page.locator('.mc-calendar .fc-goWeek-button').isVisible()) &&
+      !(await page.locator('.mc-calendar .fc-goToday-button').isVisible()),
+  )
+  check(
+    '本周 is disabled while the current week is on screen',
+    (await page.locator('.mc-calendar .fc-goWeek-button').isDisabled()) === true,
+  )
+  await page.locator('.mc-calendar .fc-next-button').click()
+  await page.waitForTimeout(600)
+  check(
+    '本周 becomes usable once the week moves',
+    (await page.locator('.mc-calendar .fc-goWeek-button').isDisabled()) === false,
+  )
+  await page.locator('.mc-calendar .fc-goWeek-button').click()
+  await page.waitForTimeout(600)
+  check(
+    '本周 returns to the week containing today',
+    (await page.locator('.mc-calendar .fc-goWeek-button').isDisabled()) === true,
   )
 
   // ------------------------------------------------ single day view
@@ -321,8 +337,8 @@ try {
   check('the day view is a real view type', dayView.view === 'timeGridDay', `view=${dayView.view}`)
   check(
     'the day view calls the jump button 今天',
-    (await page.locator('.mc-calendar .fc-today-button').isVisible()) &&
-      !(await page.locator('.mc-calendar .fc-thisWeek-button').isVisible()),
+    (await page.locator('.mc-calendar .fc-goToday-button').isVisible()) &&
+      !(await page.locator('.mc-calendar .fc-goWeek-button').isVisible()),
   )
 
   await page.locator('.mc-calendar .fc-fourDay-button').click()
@@ -332,7 +348,7 @@ try {
   // leaving it wherever a page of prev/next happened to land.
   await page.locator('.mc-calendar .fc-next-button').click()
   await page.waitForTimeout(500)
-  await page.locator('.mc-calendar .fc-today-button').click()
+  await page.locator('.mc-calendar .fc-goToday-button').click()
   await page.waitForTimeout(700)
   const anchored = await page.evaluate(() => ({
     first: document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date'),
@@ -552,17 +568,58 @@ try {
   const labelAfter = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check('next moves the window', labelBefore !== labelAfter, `${labelBefore} -> ${labelAfter}`)
 
-  // The built-in FullCalendar button greys itself out whenever today is already
-  // visible, so the app replaces it with a custom button that never refuses.
+  // The jump button is disabled exactly when the window already starts on
+  // today -- not when today merely happens to be visible somewhere in it.
+  const todayJumpState = async () =>
+    page.evaluate(() => {
+      const btn = document.querySelector('.mc-calendar .fc-goToday-button')
+      const first = document.querySelector('.mc-calendar .fc-col-header-cell')?.getAttribute('data-date')
+      return { disabled: btn?.disabled, first }
+    })
+  const startState = await todayJumpState()
   check(
-    'today stays clickable while today is already on screen',
-    (await page.locator('.mc-calendar .fc-today-button').isDisabled()) === false,
+    'today is enabled once the window has moved off today',
+    startState.disabled === false,
+    JSON.stringify(startState),
   )
 
-  await page.locator('.mc-calendar .fc-today-button').click()
+  await page.locator('.mc-calendar .fc-goToday-button').click()
   await page.waitForTimeout(600)
   const labelToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check('today returns to the current window', labelToday === labelBefore, `${labelToday} vs ${labelBefore}`)
+  const home = await todayJumpState()
+  check(
+    'and it is disabled again once today is the first column',
+    home.disabled === true,
+    JSON.stringify(home),
+  )
+
+  // Now shift the window by a single day from the mini month, so today is in
+  // the second column rather than absent: the button has somewhere to go, so it
+  // must be usable. A real click is used because the mini month only reacts to
+  // FullCalendar's own event handling.
+  const yesterday = new Date(Date.now() - 86400000)
+  const yesterdayCell = page.locator(
+    `.mc-mini .fc-daygrid-day[data-date="${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}"]`,
+  )
+  const cellBox = await yesterdayCell.boundingBox()
+  await page.mouse.click(cellBox.x + cellBox.width / 2, cellBox.y + cellBox.height / 2)
+  await page.waitForTimeout(700)
+
+  const offset = await todayJumpState()
+  check(
+    'today is enabled when it sits in a later column',
+    offset.disabled === false && offset.first !== home.first,
+    JSON.stringify(offset),
+  )
+  await page.locator('.mc-calendar .fc-goToday-button').click()
+  await page.waitForTimeout(600)
+  const back = await todayJumpState()
+  check(
+    'clicking it puts today back in the first column',
+    back.first === home.first && back.disabled === true,
+    JSON.stringify(back),
+  )
 
   // ...including after selecting a slot in the past, which is when someone is
   // most likely to want it.
@@ -581,7 +638,7 @@ try {
   }
 
   const beforeToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
-  await page.locator('.mc-calendar .fc-today-button').click()
+  await page.locator('.mc-calendar .fc-goToday-button').click()
   await page.waitForTimeout(600)
   const afterToday = await page.locator('.mc-calendar .fc-toolbar-title').textContent()
   check(

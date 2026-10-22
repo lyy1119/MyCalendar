@@ -1,4 +1,4 @@
-import { useMemo, type RefObject } from 'react'
+import { useCallback, useMemo, type RefObject } from 'react'
 import FullCalendar from '@fullcalendar/react'
 import type { DateSelectArg, DatesSetArg, EventClickArg, EventContentArg } from '@fullcalendar/core'
 import type { DateClickArg } from '@fullcalendar/interaction'
@@ -9,7 +9,7 @@ import zhCn from '@fullcalendar/core/locales/zh-cn'
 
 import type { ApiCategory, ApiEvent } from '../api'
 import { toCalendarEvent } from '../eventMapping'
-import { WEEKDAY_SHORT } from '../time'
+import { WEEKDAY_SHORT, isSameDay, startOfWeek } from '../time'
 
 /**
  * The contents of an event block.
@@ -99,6 +99,42 @@ export function CalendarPane({
     return events.map((event) => toCalendarEvent(event, byId))
   }, [events, categories])
 
+  /**
+   * Enables "今天"/"本周" only when it would actually move the window.
+   *
+   * The rule is about the rendered window, not about the date: a 4-day window
+   * that already starts on today has nowhere to go, while one that merely
+   * contains today in a later column does. FullCalendar's own button got this
+   * backwards -- it disabled itself whenever today was anywhere in view -- and
+   * its customButtons cannot express a disabled state, so the attribute is set
+   * here after every render of the view.
+   */
+  const syncJumpButtons = useCallback(
+    (arg: DatesSetArg) => {
+      // The app renders exactly one calendar, and the toolbar lives inside this
+      // container; FullCalendar's React wrapper does not expose its element.
+      const root = document.querySelector('.mc-calendar')
+      if (!root) return
+
+      const today = new Date()
+      const isWeekView = arg.view.type === 'timeGridWeek'
+      const anchored = isWeekView
+        ? isSameDay(arg.view.currentStart, startOfWeek(today))
+        : isSameDay(arg.view.currentStart, today)
+
+      for (const [selector, hint] of [
+        ['.fc-goToday-button', '把今天放到第一列'],
+        ['.fc-goWeek-button', '回到本周'],
+      ] as const) {
+        const button = root.querySelector<HTMLButtonElement>(selector)
+        if (!button) continue
+        button.disabled = anchored
+        button.title = anchored ? '当前窗口已经从这里开始' : hint
+      }
+    },
+    [calendarRef],
+  )
+
   return (
     <FullCalendar
       ref={calendarRef}
@@ -123,7 +159,7 @@ export function CalendarPane({
       // is 本周. A custom button's text is fixed, so the pair is toggled by the
       // data-view attribute on the container instead.
       headerToolbar={{
-        left: 'prev,next today,thisWeek',
+        left: 'prev,next goToday,goWeek',
         center: 'title',
         right: 'timeGridDay,fourDay,timeGridWeek',
       }}
@@ -132,19 +168,20 @@ export function CalendarPane({
       // button sits there greyed out and unclickable most of the time -- which
       // reads as broken. The click-through does exactly what the built-in one
       // does, but it is always available, so "back to today" never refuses.
+      // Named goToday/goWeek rather than today/thisWeek: FullCalendar silently
+      // ignores a customButtons entry whose name matches a built-in button, so
+      // calling it "today" kept the built-in one -- and that one disables
+      // itself whenever today is visible, which is the bug this replaced.
       customButtons={{
         // Both jump to today; in the week view that is the week containing it,
         // which is the same call. The anchor is today itself, so a 4-day window
-        // puts today in the leftmost column rather than centred or centred on
-        // some other day.
-        today: {
+        // puts today in the leftmost column.
+        goToday: {
           text: '今天',
-          hint: '把今天放到第一列',
           click: () => calendarRef.current?.getApi().today(),
         },
-        thisWeek: {
+        goWeek: {
           text: '本周',
-          hint: '回到本周',
           click: () => calendarRef.current?.getApi().today(),
         },
       }}
@@ -176,7 +213,10 @@ export function CalendarPane({
       editable={false}
       events={calendarEvents}
       eventContent={eventChip}
-      datesSet={onDatesSet}
+      datesSet={(arg) => {
+        syncJumpButtons(arg)
+        onDatesSet(arg)
+      }}
       eventClick={onEventClick}
       select={onSelect}
       dateClick={onDateClick}
