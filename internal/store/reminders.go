@@ -15,11 +15,12 @@ import (
 type ReminderFilter struct {
 	// EventID keeps only the reminders of one event.
 	EventID *int64
-	// IncludeDeleted also returns reminders whose event is in the trash. Off by
-	// default: a trashed event must not notify anybody, and a client polling
-	// this endpoint is looking for something to act on. The query parameter that
-	// sets it is `deleted`, matching the column.
-	IncludeDeleted bool
+	// IncludeCanceled also returns reminders whose event has been called off.
+	// Off by default: a canceled event is not going to happen, so its reminder
+	// is noise for a client looking for what to do next. Trashed events are
+	// different -- their reminders are never listed at all, because the row is
+	// on its way to being destroyed.
+	IncludeCanceled bool
 	// From and To bound remind_at, half-open.
 	From *int64
 	To   *int64
@@ -84,8 +85,12 @@ func (s *Store) ListReminders(ctx context.Context, f ReminderFilter) ([]model.Re
 	// unambiguous, but event_id would not be.
 	query := `SELECT ` + reminderColumnsQualified + `
 	          FROM reminders r JOIN events e ON e.id = r.event_id`
-	if !f.IncludeDeleted {
-		conds = append(conds, `e.deleted = 0`)
+	// A trashed event's reminders are never listed: the event is out of the
+	// calendar and heading for deletion, so there is nothing to warn anybody
+	// about and no parameter opens this.
+	conds = append(conds, `e.deleted = 0`)
+	if !f.IncludeCanceled {
+		conds = append(conds, `e.canceled = 0`)
 	}
 	if len(conds) > 0 {
 		query += ` WHERE ` + strings.Join(conds, " AND ")

@@ -139,13 +139,13 @@ func parseReminderFilter(r *http.Request, loc *time.Location) (store.ReminderFil
 		summary = map[string]any{}
 	)
 
-	if raw := strings.TrimSpace(q.Get("deleted")); raw != "" {
+	if raw := strings.TrimSpace(q.Get("include_canceled")); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {
-			return filter, nil, apperr.Param("deleted", "must be true or false")
+			return filter, nil, apperr.Param("include_canceled", "must be true or false")
 		}
-		filter.IncludeDeleted = v
-		summary["deleted"] = v
+		filter.IncludeCanceled = v
+		summary["include_canceled"] = v
 	}
 	if raw := strings.TrimSpace(q.Get("event_id")); raw != "" {
 		id, err := parsePositiveInt("event_id", raw)

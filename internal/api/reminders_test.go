@@ -290,8 +290,8 @@ func TestReminderDelete(t *testing.T) {
 	}
 }
 
-// Trashing an event keeps its reminders in the table but drops them from the
-// listing; destroying it is what cascades.
+// Trashing an event keeps its reminders in the table but hides them for good:
+// there is no parameter that lists the reminders of a trashed event.
 func TestReminderCascadeOnDeleteForever(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 	eventID := newEventForReminders(t, h, "会议")
@@ -300,26 +300,20 @@ func TestReminderCascadeOnDeleteForever(t *testing.T) {
 	path := fmt.Sprintf("/api/v1/events/%d", eventID)
 	h.do(http.MethodDelete, path, "", nil)
 
-	// Still there, but no longer listed: a trashed event must not notify.
-	status, _, raw := h.do(http.MethodGet, "/api/v1/reminders", "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("status = %d", status)
-	}
-	if got := h.decode(raw); got["count"].(float64) != 0 {
-		t.Errorf("reminders of a trashed event are still listed: %v", got["count"])
-	}
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?deleted=true", "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("status = %d", status)
-	}
-	if got := h.decode(raw); got["count"].(float64) != 1 {
-		t.Errorf("trashing the event dropped its reminders: %v", got["count"])
+	for _, query := range []string{"", "?include_canceled=true", "?deleted=true"} {
+		status, _, raw := h.do(http.MethodGet, "/api/v1/reminders"+query, "", nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s: status = %d", query, status)
+		}
+		if got := h.decode(raw); got["count"].(float64) != 0 {
+			t.Errorf("reminders of a trashed event are listed under %q: %v", query, got["count"])
+		}
 	}
 
 	h.do(http.MethodPost, path+"/delete_forever", "", nil)
 
-	for _, query := range []string{"", "?deleted=true"} {
-		status, _, raw = h.do(http.MethodGet, "/api/v1/reminders"+query, "", nil)
+	for _, query := range []string{"", "?include_canceled=true"} {
+		status, _, raw := h.do(http.MethodGet, "/api/v1/reminders"+query, "", nil)
 		if status != http.StatusOK {
 			t.Fatalf("status = %d", status)
 		}
@@ -329,18 +323,18 @@ func TestReminderCascadeOnDeleteForever(t *testing.T) {
 	}
 }
 
-// The reminder of a trashed event is hidden from the collection but still
-// readable by id, the same way the event itself behaves.
-func TestReminderListHidesDeletedEvents(t *testing.T) {
+// A called-off event keeps its reminders in the table but they are not listed
+// unless the caller asks for them: a canceled event is not going to happen, so
+// its reminder is noise for anything looking for what to do next.
+func TestReminderListHidesCanceledEvents(t *testing.T) {
 	h := newHarness(t, "Asia/Shanghai")
 
 	keep := newEventForReminders(t, h, "保留")
 	addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460700}`, keep))
 
-	drop := newEventForReminders(t, h, "删除")
-	gone := reminderID(t, addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460800}`, drop)))
-
-	h.do(http.MethodDelete, fmt.Sprintf("/api/v1/events/%d", drop), "", nil)
+	canceled := newEventForReminders(t, h, "取消")
+	canceledReminder := reminderID(t, addReminder(t, h, fmt.Sprintf(`{"event_id":%d,"remind_at":1792460800}`, canceled)))
+	h.do(http.MethodPost, fmt.Sprintf("/api/v1/events/%d/cancel", canceled), "", nil)
 
 	status, _, raw := h.do(http.MethodGet, "/api/v1/reminders", "", nil)
 	if status != http.StatusOK {
@@ -348,41 +342,52 @@ func TestReminderListHidesDeletedEvents(t *testing.T) {
 	}
 	got := h.decode(raw)
 	if got["count"].(float64) != 1 {
-		t.Fatalf("count = %v, want only the reminder of the event that is still alive", got["count"])
+		t.Fatalf("count = %v, want only the reminder of the event that still stands", got["count"])
 	}
-	first := got["reminders"].([]any)[0].(map[string]any)
-	if int(first["event_id"].(float64)) != keep {
+	if first := got["reminders"].([]any)[0].(map[string]any); int(first["event_id"].(float64)) != keep {
 		t.Errorf("listed reminder belongs to event %v, want %d", first["event_id"], keep)
 	}
 
-	// Naming the event explicitly does not bypass the hiding: the filter says
-	// which event, not that deleted ones are wanted.
-	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/reminders?event_id=%d", drop), "", nil)
-	if status != http.StatusOK {
-		t.Fatalf("status = %d", status)
-	}
-	if got := h.decode(raw); got["count"].(float64) != 0 {
-		t.Errorf("event_id filter listed a deleted event's reminders: %v", got["count"])
-	}
-
-	// include_deleted asks for them, and says so in the echoed filters.
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?deleted=true", "", nil)
+	// include_canceled asks for them, and says so in the echoed filters.
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_canceled=true", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
 	}
 	got = h.decode(raw)
 	if got["count"].(float64) != 2 {
-		t.Errorf("deleted=true count = %v, want both reminders", got["count"])
+		t.Errorf("include_canceled=true count = %v, want both reminders", got["count"])
+	}
+	if filters, ok := got["filters"].(map[string]any); !ok || filters["include_canceled"] != true {
+		t.Errorf("filters = %v, want include_canceled echoed", got["filters"])
+	}
+
+	// Naming the event explicitly does not bypass the hiding.
+	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/reminders?event_id=%d", canceled), "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if got := h.decode(raw); got["count"].(float64) != 0 {
+		t.Errorf("event_id listed a canceled event's reminders: %v", got["count"])
+	}
+
+	// Un-canceling brings it back into the listing.
+	h.do(http.MethodPatch, fmt.Sprintf("/api/v1/events/%d", canceled), `{"canceled":false}`, nil)
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	if got := h.decode(raw); got["count"].(float64) != 2 {
+		t.Errorf("count after un-canceling = %v, want both", got["count"])
 	}
 
 	// The reminder itself is still addressable, like its event.
-	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/reminders/%d", gone), "", nil)
+	status, _, raw = h.do(http.MethodGet, fmt.Sprintf("/api/v1/reminders/%d", canceledReminder), "", nil)
 	if status != http.StatusOK {
-		t.Fatalf("GET reminder of a deleted event status = %d, want 200", status)
+		t.Fatalf("GET reminder of a canceled event status = %d, want 200", status)
 	}
 
 	// A bad value for the flag is a parameter error, not a silent false.
-	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?deleted=maybe", "", nil)
+	status, _, raw = h.do(http.MethodGet, "/api/v1/reminders?include_canceled=maybe", "", nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body: %s", status, raw)
 	}

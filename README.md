@@ -244,7 +244,7 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 | POST | `/api/v1/events/{id}/cancel` | 取消事项：仍在日历上，划掉显示；`PATCH {"canceled":false}` 撤销 |
 | DELETE | `/api/v1/events/{id}` | 移到回收站（`deleted=1`）：离开所有列表，行还在，可 `PATCH {"deleted":false}` 恢复 |
 | POST | `/api/v1/events/{id}/delete_forever` | 真正删行（连提醒一起删）；**只允许回收站里的日程**，否则 409 `not_in_trash` |
-| GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它）。**回收站里日程的提醒默认不返回**，要查用 `deleted=true` |
+| GET | `/api/v1/reminders` | 查询提醒（可按 `event_id` 与时间窗过滤——客户端轮询"该提醒了"用它）。**已取消日程的提醒默认不返回**，要查用 `include_canceled=true`；**回收站里日程的提醒任何参数都不返回** |
 | POST | `/api/v1/reminders` | 给已存在的日程添加提醒 |
 | GET | `/api/v1/reminders/{id}` | 查询单个提醒 |
 | PATCH | `/api/v1/reminders/{id}` | 修改提醒时间 |
@@ -269,7 +269,12 @@ MYCAL_TZ=Asia/Shanghai MYCAL_DB=/var/lib/mycalendar/data.db ./mycalendar
 
 列表接口的过滤参数：`category_id`（只看某个分类，0 是默认分类、不会为负）、`deleted=true|false`（`true` 只列回收站、`false` 只列正常日程、省略则隐藏回收站）、`canceled`（只看已取消/未取消）、`is_task`、`is_completed`、`q` 配合 `q_field=title|location|notes|date`（默认标题；`date` 时 `q` 必须是 `YYYY-MM-DD`）、`limit`/`offset`。`display` **不参与服务端过滤**——它是给人看的偏好，前端据此隐藏某些分类。
 
-提醒列表和日程列表遵循同一条规则：**回收站里的日程，其提醒默认不出现在 `/api/v1/reminders` 里**——丢掉的事项不该再提醒任何人，而轮询这个接口的客户端正是在找"接下来要做什么"。需要时用 `deleted=true` 取回；`/api/v1/reminders/{id}` 仍按 id 返回单条，与"回收站里的日程仍可按 id 读到"保持一致。
+提醒列表对两种状态的处理不一样，因为它们的含义不同：
+
+- **已取消**：这件事不会发生了，提醒本来就是噪音，所以默认不返回；`include_canceled=true` 可以取回（给那些想显示全部东西的客户端）。取消状态本身不影响提醒的存在，取消再撤销后提醒会重新出现。
+- **回收站**：日程已经离开日历、正在等删除，`/api/v1/reminders` **任何参数都不会返回**它的提醒——没有"打开"的开关。
+
+`/api/v1/reminders/{id}` 仍然按 id 返回单条提醒（取不取消都一样），与"日程本身仍可按 id 读到"保持一致。
 
 路由分工：`/` 归前端（任何非 `/api` 开头的路径都会返回前端外壳，这样前端路由刷新不会 404），`/api/*` 归机器，未知的 `/api/*` 路径仍然返回 JSON 404 而不会被前端吞掉。JSON 版的接口索引位于 `/api`（原先在 `/`，前端接管根路径后迁移）。
 
