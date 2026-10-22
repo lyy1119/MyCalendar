@@ -916,6 +916,22 @@ body {
   color: var(--mc-text);
 }
 
+/* Restore sits left of the destructive action: the recoverable choice first,
+   the irreversible one last. */
+.mc-trash__actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.mc-trash__restore {
+  color: var(--mc-accent);
+}
+
+.mc-trash__restore:hover:not(:disabled) {
+  background: var(--mc-hover);
+}
+
 .mc-trash__destroy {
   flex: 0 0 auto;
 }

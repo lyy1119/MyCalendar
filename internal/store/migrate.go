@@ -80,17 +80,18 @@ var migrations = []step{
 	{
 		from:  2,
 		to:    3,
-		notes: "canceled and deleted on events; the deleted category becomes the trash",
+		notes: "canceled and deleted on events; the deleted category is retired",
 		apply: func(ctx context.Context, tx *sql.Tx) error {
 			steps := []string{
 				// Appended in this order; currentSchema lists them the same way.
 				`ALTER TABLE events ADD COLUMN canceled INTEGER NOT NULL DEFAULT 0`,
 				`ALTER TABLE events ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0`,
-				// Format 2 said "deleted" by setting category -1. That state now
-				// lives on the event, so those rows move into the trash: off the
-				// calendar, still recoverable, and no longer pretending to be a
-				// grouping of their own.
-				`UPDATE events SET category_id = 0, deleted = 1 WHERE category_id = -1`,
+				// Format 2 said "deleted" by setting category -1. That state is
+				// gone, and the rows that carried it come back into the default
+				// category marked canceled: they are visibly called off rather
+				// than silently dropped, and the trash stays reserved for things
+				// the user discards on purpose.
+				`UPDATE events SET category_id = 0, canceled = 1 WHERE category_id = -1`,
 				// -1 stops existing as a category, so a stale reference from a
 				// client becomes a validation error instead of a silent state.
 				`DELETE FROM categories WHERE id = -1`,

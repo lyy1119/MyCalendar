@@ -3,6 +3,7 @@ import {
   ApiError,
   deleteForeverEvent,
   listEvents,
+  updateEvent,
   type ApiCategory,
   type ApiEvent,
   type SearchField,
@@ -89,6 +90,22 @@ export function TrashPage({ categories, onBack, onChanged }: Props) {
   const search = (event: React.FormEvent) => {
     event.preventDefault()
     void load(query, field)
+  }
+
+  // Restoring is an ordinary field write: it puts the event back on the
+  // calendar with its category, reminders and canceled state untouched.
+  const restore = async (event: ApiEvent) => {
+    setBusyID(event.id)
+    setError(null)
+    try {
+      await updateEvent(event.id, { deleted: false }, BROWSER_TZ)
+      setEvents((prev) => prev.filter((e) => e.id !== event.id))
+      onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.fullMessage : String(err))
+    } finally {
+      setBusyID(null)
+    }
   }
 
   const destroy = async (event: ApiEvent) => {
@@ -182,14 +199,24 @@ export function TrashPage({ categories, onBack, onChanged }: Props) {
                     {event.location && <span className="mc-trash__where">{event.location}</span>}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="mc-btn mc-btn--small mc-btn--danger mc-trash__destroy"
-                  disabled={busyID === event.id}
-                  onClick={() => void destroy(event)}
-                >
-                  永久删除
-                </button>
+                <div className="mc-trash__actions">
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn--small mc-trash__restore"
+                    disabled={busyID === event.id}
+                    onClick={() => void restore(event)}
+                  >
+                    还原
+                  </button>
+                  <button
+                    type="button"
+                    className="mc-btn mc-btn--small mc-btn--danger mc-trash__destroy"
+                    disabled={busyID === event.id}
+                    onClick={() => void destroy(event)}
+                  >
+                    永久删除
+                  </button>
+                </div>
               </li>
             )
           })}

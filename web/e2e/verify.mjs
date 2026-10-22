@@ -1099,6 +1099,32 @@ try {
   await page.waitForTimeout(700)
   check('searching by title finds it', (await page.locator('.mc-trash__row').count()) === 1)
 
+  // Restore sits left of the destructive action and puts the event back.
+  const actionOrder = await page.evaluate(() => {
+    const acts = document.querySelector('.mc-trash__actions')
+    return acts ? [...acts.querySelectorAll('button')].map((b) => b.textContent.trim()) : []
+  })
+  check('restore comes before 永久删除', actionOrder[0] === '还原' && actionOrder[1] === '永久删除', actionOrder.join('|'))
+
+  await page.locator('.mc-trash__restore').first().click()
+  await page.waitForTimeout(800)
+  check('还原 takes the event out of the trash', (await page.locator('.mc-trash__row').count()) === 0)
+  const restored = await api(
+    `/api/v1/events?from=1970-01-01T00:00:00&to=2100-01-01T00:00:00&tz=${encodeURIComponent(TZ)}&deleted=true`,
+  )
+  check('and it is no longer in the trash on the server', (restored.body?.count ?? 1) === 0)
+
+  // Put one back in the trash to exercise the destroy path.
+  const again = (await api(`/api/v1/events?from=1970-01-01T00:00:00&to=2100-01-01T00:00:00&tz=${encodeURIComponent(TZ)}`)).body?.events?.find(
+    (e) => e.title === '新建的日程',
+  )
+  await api(`/api/v1/events/${again?.id}`, { method: 'DELETE' })
+  await page.selectOption('.mc-trash__field', 'title')
+  await page.fill('.mc-trash__term', '新建的日程')
+  await page.click('.mc-trash__search button[type="submit"]')
+  await page.waitForTimeout(700)
+  check('the trashed event is listed again', (await page.locator('.mc-trash__row').count()) === 1)
+
   page.once('dialog', (d) => d.accept())
   await page.locator('.mc-trash__destroy').first().click()
   await page.waitForTimeout(800)

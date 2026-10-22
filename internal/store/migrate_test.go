@@ -264,8 +264,8 @@ func TestUpgradeFromV1IsRefused(t *testing.T) {
 }
 
 // Upgrading a v2.0.2 database: the two new columns appear, the events that
-// format 2 had marked deleted by category -1 move into the trash, and the
-// deleted category itself is gone.
+// format 2 had marked deleted by category -1 come back as canceled ones in the
+// default category, and the deleted category itself is gone.
 func TestUpgradeFromV2Database(t *testing.T) {
 	ctx := context.Background()
 	path := makeV2Database(t)
@@ -293,20 +293,23 @@ func TestUpgradeFromV2Database(t *testing.T) {
 		t.Errorf("live event after upgrade = %+v", live)
 	}
 
-	// The event format 2 called deleted is now in the trash, in the default
-	// category, with its reminder intact.
-	trashed, err := st.GetEvent(ctx, 2)
+	// The event format 2 called deleted is back on the calendar, in the default
+	// category, marked canceled, with its reminder intact.
+	revived, err := st.GetEvent(ctx, 2)
 	if err != nil {
 		t.Fatalf("GetEvent 2: %v", err)
 	}
-	if !trashed.Deleted {
-		t.Errorf("the event that was deleted in format 2 is not in the trash")
+	if !revived.Canceled {
+		t.Errorf("the event that was deleted in format 2 is not marked canceled")
 	}
-	if trashed.CategoryID != CategoryUncategorized {
-		t.Errorf("category_id = %d, want the default 0", trashed.CategoryID)
+	if revived.Deleted {
+		t.Errorf("the event came back in the trash; it should be canceled, not discarded")
 	}
-	if len(trashed.Reminders) != 1 {
-		t.Errorf("reminders = %d, want the trashed event's reminder kept", len(trashed.Reminders))
+	if revived.CategoryID != CategoryUncategorized {
+		t.Errorf("category_id = %d, want the default 0", revived.CategoryID)
+	}
+	if len(revived.Reminders) != 1 {
+		t.Errorf("reminders = %d, want the revived event's reminder kept", len(revived.Reminders))
 	}
 
 	// The deleted category no longer exists; what is left is 0 and the user's.
@@ -322,9 +325,21 @@ func TestUpgradeFromV2Database(t *testing.T) {
 		t.Errorf("categories after upgrade = %v, want [0 1]", ids)
 	}
 
-	// A calendar query does not see the trashed row; the trash filter does.
-	inTrash := true
+	// Both events are on the calendar now, and the trash is empty.
 	listed, err := st.ListEvents(ctx, model.EventFilter{
+		Start:     time.Unix(1773200000, 0),
+		End:       time.Unix(1773300000, 0),
+		StartDate: "2026-03-11",
+		EndDate:   "2026-03-12",
+	})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Errorf("calendar listing = %d events, want both", len(listed))
+	}
+	inTrash := true
+	trashed, err := st.ListEvents(ctx, model.EventFilter{
 		Start:     time.Unix(1773200000, 0),
 		End:       time.Unix(1773300000, 0),
 		StartDate: "2026-03-11",
@@ -332,10 +347,10 @@ func TestUpgradeFromV2Database(t *testing.T) {
 		Deleted:   &inTrash,
 	})
 	if err != nil {
-		t.Fatalf("ListEvents: %v", err)
+		t.Fatalf("ListEvents trash: %v", err)
 	}
-	if len(listed) != 1 || listed[0].ID != 2 {
-		t.Errorf("trash listing = %+v, want just event 2", listed)
+	if len(trashed) != 0 {
+		t.Errorf("trash listing = %+v, want it empty after the upgrade", trashed)
 	}
 }
 
